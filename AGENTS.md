@@ -29,7 +29,7 @@
 |---|---|
 | 产品目标、范围、行为、验收 | [`docs/product/PRD.md`](docs/product/PRD.md) |
 | 领域术语与用户文案边界 | [`docs/product/GLOSSARY.md`](docs/product/GLOSSARY.md) |
-| 当前建议的技术方向 | PRD 第 17 节；在形成 Accepted ADR 前视为待验证方案 |
+| 当前技术方案 | PRD 第 17 节；选择理由与不可逆取舍见对应 Accepted ADR，能力是否已验证仍以代码、测试与 Phase 0 实测为准 |
 | 已接受的技术决策及理由 | [`docs/decisions/README.md`](docs/decisions/README.md) 及对应 ADR |
 | 当前项目阶段与下一里程碑 | [`docs/agent/PROJECT_STATE.md`](docs/agent/PROJECT_STATE.md)，随后必须现场核验 |
 | 当前实现行为 | 代码、测试与实际运行结果 |
@@ -46,12 +46,12 @@
 | 产品定位、范围、流程 | PRD 第 1–8、23–24 节 | 涉及命名或状态语义时读 `GLOSSARY.md` |
 | 资产模型 | `GLOSSARY.md`；PRD 第 8、13 节 | 持久化任务再读第 15 节 |
 | 结果状态、变化比较或结果文案 | `GLOSSARY.md`；PRD 第 13、14.2–14.5、15.1、21.1 节 | 只有涉及配置变化状态时再读第 8.1 节 |
-| 域名、DNS、Web 探测或归因 | `GLOSSARY.md`；PRD 第 9–10、13、16、18 节 | Cloudflare 任务读第 12 节；macOS resolver 读第 17.4 节 |
+| 域名、DNS、Web 探测或归因 | `GLOSSARY.md`；PRD 第 9–10、13、16、18 节 | Cloudflare 任务读第 12 节；系统 resolver 与平台 adapter 读第 17.4 节及 ADR 0001 |
 | 服务器、SSH、HTTP/HTTPS 探测 | `GLOSSARY.md`；PRD 第 9、11–13、16、18–19 节 | 关联域名任务再读第 12 节 |
-| UI、交互与结果呈现 | PRD 第 7–8、13–14、21 节 | 用户文案再读 `GLOSSARY.md` |
+| UI、交互与结果呈现 | PRD 第 7–8、13–14、17.5、21 节；ADR 0002 | 用户文案再读 `GLOSSARY.md` |
 | 存储、本地 API、生命周期或安全 | PRD 第 15–18、21 节 | 技术取舍再读相关 ADR |
-| Phase 0 DNS Spike | `GLOSSARY.md`；PRD 第 10、16.2、16.4、17.4、19.1、19.3–19.4 节；`PROJECT_STATE.md` | 涉及 Cloudflare 时再读第 12 节 |
-| Phase 0 服务器 Spike | `GLOSSARY.md`；PRD 第 11、16.2、19.2–19.4 节；`PROJECT_STATE.md` | 涉及域名关联时再读第 12 节 |
+| Phase 0 DNS Spike | `GLOSSARY.md`；PRD 第 10、16.2、16.4、17.4、19.1、19.3–19.4 节；ADR 0001；`PROJECT_STATE.md` | 涉及 Cloudflare 时再读第 12 节 |
+| Phase 0 服务器 Spike | `GLOSSARY.md`；PRD 第 11、16.2、19.2–19.4 节；ADR 0001；`PROJECT_STATE.md` | 涉及域名关联时再读第 12 节 |
 | 测试某项行为 | 对应产品章节、验收条目、目标代码与现有测试 | 跨 module 才读架构文档或 ADR |
 | 整体验收 | PRD 第 21 节及失败条目对应的产品章节 | 性能验收再读第 18 节 |
 | 架构、依赖或模块 interface 变化 | PRD 第 17 节；ADR 索引；相关产品章节 | 有代码后读取目标模块与测试 |
@@ -82,6 +82,8 @@ docs/
 │   ├── DOCUMENTATION.md          # 文档维护、拆分和跨 Agent 规则
 │   └── PROJECT_STATE.md          # 短期项目状态快照
 ├── decisions/
+│   ├── 0001-cross-platform-go-local-web-architecture.md
+│   ├── 0002-react-embedded-browser-ui.md
 │   ├── README.md                 # ADR 索引与使用规则
 │   └── TEMPLATE.md               # ADR 模板
 └── product/

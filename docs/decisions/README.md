@@ -10,7 +10,7 @@
 
 ADR 记录影响广、难以逆转或仅看代码无法理解理由的技术选择。产品目标、范围和用户行为仍由 PRD 负责；PRD 第 23 节中的产品决策不在这里复制。
 
-当前没有 Accepted ADR。PRD 第 17 节中的技术栈、module 划分和本地 interface 是 Phase 0 前的建议方案，不等同于已经锁定或实现的架构。首次建立代码骨架前，应根据实际验证结果决定是否将其中的关键选择记录为 ADR。
+当前技术方向由 PRD 第 17 节描述，关键选择及理由由下方 Accepted ADR 保存。Accepted 表示方案已经确定，不表示代码存在或网络能力已经通过实测；验证状态仍以代码、测试、Phase 0 记录和实时仓库为准。
 
 适合建立 ADR 的情况：
 
@@ -34,7 +34,7 @@ ADR 记录影响广、难以逆转或仅看代码无法理解理由的技术选�
 
 ## Index
 
-当前没有 ADR。第一项技术决策出现时，从 [`TEMPLATE.md`](TEMPLATE.md) 创建 `0001-*.md`，并在此表登记。
-
 | ID | Decision | Status | Supersedes |
 |---|---|---|---|
+| [0001](0001-cross-platform-go-local-web-architecture.md) | Use a cross-platform Go local process with browser UI | Accepted | — |
+| [0002](0002-react-embedded-browser-ui.md) | Use React and TypeScript for the embedded browser UI | Accepted | — |

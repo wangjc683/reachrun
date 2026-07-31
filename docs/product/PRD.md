@@ -6,9 +6,9 @@
 >
 > Update when：已确认的产品行为或范围发生变化
 >
-> 状态：V1 Draft
+> 状态：V1 Baseline（Phase 0 Ready）
 >
-> 产品形态：macOS 本地应用（本地检测引擎 + 浏览器 UI）
+> 产品形态：跨平台本地工具（本地检测进程 + 系统浏览器 UI）
 >
 > 目标用户：JC
 >
@@ -18,7 +18,7 @@
 
 ## 1. 产品概述
 
-ReachRun 是一款运行在 macOS 本地的个人互联网资产体检工具。
+ReachRun 是一款运行在 macOS、Windows 和 Linux 本地的个人互联网资产体检工具。
 
 用户首次保存固定域名和境外服务器后，日常只需打开应用并点击“检测全部”。工具先快速判断域名公开网站路径、服务器 SSH 与网站服务是否可用；仅对失败、变化或证据不足的项目自动执行更深的 DNS、IPv4/IPv6、TCP、TLS/SNI 和强制 IP 对照诊断。
 
@@ -28,7 +28,7 @@ ReachRun 是一款运行在 macOS 本地的个人互联网资产体检工具。
 2. 与上一个可比较结果相比，哪些是新增异常、已经恢复或持续异常；
 3. 异常最可能发生在 DNS、IPv4/IPv6、TCP、TLS/SNI、HTTP 或 SSH 的哪一层，下一步应做什么。
 
-所有检测从当前 Mac 所在网络发起。应用不把域名、服务器清单或检测结果发送到自建服务端，也不在后台定时运行。
+所有检测从当前设备所在网络发起。工具不把域名、服务器清单或检测结果发送到自建服务端，也不在后台定时运行。
 
 ## 2. 背景与问题
 
@@ -75,7 +75,7 @@ ReachRun 是一款运行在 macOS 本地的个人互联网资产体检工具。
 
 ### 5.1 必须具备
 
-- macOS Apple Silicon 本地运行；
+- macOS、Windows 和 Linux 本地运行，并在三个系统上保持相同的核心检测语义与浏览器交互；
 - 固定域名与服务器资产的本地保存、编辑和删除；
 - 一键“检测全部”；
 - 检测进行中可“停止检测”；
@@ -105,8 +105,8 @@ ReachRun 是一款运行在 macOS 本地的个人互联网资产体检工具。
 - Cloudflare API 登录、DNS 修改或自动修复；
 - 识别 Cloudflare Pages、Workers、Tunnel 等具体产品；
 - 多用户、账号、团队协作和云同步；
-- Intel Universal、Windows/Linux 图形发行版；
-- 面向外部分发的签名、公证和自动更新；
+- `.app`、MSI、AppImage、Electron、Tauri、Wails 等原生客户端壳或图形安装器；
+- 面向外部分发的代码签名、公证、包管理器分发和自动更新；
 - JSON/Markdown 完整报告导出。
 
 ## 6. 目标用户与使用环境
@@ -114,7 +114,7 @@ ReachRun 是一款运行在 macOS 本地的个人互联网资产体检工具。
 ### 6.1 主要用户
 
 - JC；
-- 使用 Apple Silicon Mac；
+- 使用 macOS、Windows 和 Linux 设备；
 - 常住厦门；
 - 固定检查数十个自有域名和若干境外服务器；
 - 主动打开应用并点击检测，不需要后台监控；
@@ -126,10 +126,10 @@ ReachRun 是一款运行在 macOS 本地的个人互联网资产体检工具。
 
 应用应展示能够安全取得的环境信息：
 
-- macOS 与应用版本；
+- 操作系统、CPU 架构与 ReachRun 版本；
 - 当前时间；
 - 活跃网络接口；
-- macOS resolver 配置快照；
+- 当前操作系统可安全取得的 resolver 配置快照与解析能力说明；
 - 常见代理环境变量和系统代理迹象；
 - 当前是否具有可用 IPv4/IPv6 路径；
 - 检测到 VPN/TUN/代理迹象时的置信度提示。
@@ -146,8 +146,8 @@ ReachRun 是一款运行在 macOS 本地的个人互联网资产体检工具。
 
 ### 7.1 首次使用
 
-1. 用户双击启动应用。
-2. 程序只绑定 `127.0.0.1` 的随机端口并自动打开浏览器。
+1. 用户在终端运行当前平台的 `reachrun` 或 `reachrun.exe`；从源码使用时运行仓库提供的统一启动命令。
+2. 程序只绑定 `127.0.0.1` 的随机端口并自动打开系统默认浏览器；打开失败时在终端显示可复制的本地地址，不影响继续使用。
 3. 用户添加域名资产和服务器资产。
 4. 用户点击“检测全部”。
 5. 快速体检逐项返回结果。
@@ -268,7 +268,7 @@ V1 不支持端口范围或任意服务列表。若网站域名未提供：
 
 每个域名至少执行：
 
-1. macOS 系统解析路径查询 A/AAAA 最终地址；
+1. 当前操作系统的系统解析路径查询 A/AAAA 最终地址；
 2. 使用正常系统解析执行 HTTPS `GET /`；
 3. 记录实际连接 IP、地址族、TCP/TLS/TTFB/总耗时；
 4. 验证证书 hostname、有效期和信任链；
@@ -307,7 +307,7 @@ HTTP-only 域名显示“链路可达 · HTTP-only · 身份未验证”，置�
 
 按需执行：
 
-1. 记录 macOS 系统解析结果；
+1. 记录当前操作系统的系统解析结果及其能力等级；
 2. 获取当前 resolver 配置快照；
 3. 对当前接口公布的 DNS 服务器做受控 UDP 查询；
 4. 使用两个独立参考 DoH resolver 查询；
@@ -318,7 +318,7 @@ HTTP-only 域名显示“链路可达 · HTTP-only · 身份未验证”，置�
 
 不同证据必须分开建模：
 
-- **System Resolution**：应用通过 macOS 系统路径实际得到的地址或错误；
+- **System Resolution**：应用通过当前操作系统路径实际得到的地址或错误；
 - **Resolver Inventory**：系统当前配置的 resolver 快照，只是配置证据；
 - **DNS Observation**：对明确 resolver 发出的原始 UDP/TCP/DoH 查询。
 
@@ -350,7 +350,7 @@ HTTPS/SVCB 处理边界：
 
 ## 11. 服务器资产检测
 
-§10.1 的地址族证据规则同样适用于服务器资产：当前 Mac 没有可用 IPv6 路由时，服务器 IPv6 端点显示“当前网络不具备 IPv6 检测条件”，属于未测试而非失败；若 IPv4 服务已响应，不能仅因此把服务器标为“部分可达”。只有本机具备该地址族条件且候选实际失败，才参与部分可达/未建立服务链路判断。
+§10.1 的地址族证据规则同样适用于服务器资产：当前设备没有可用 IPv6 路由时，服务器 IPv6 端点显示“当前网络不具备 IPv6 检测条件”，属于未测试而非失败；若 IPv4 服务已响应，不能仅因此把服务器标为“部分可达”。只有本机具备该地址族条件且候选实际失败，才参与部分可达/未建立服务链路判断。
 
 ### 11.1 SSH
 
@@ -412,7 +412,7 @@ Cloudflare 场景必须明确显示“公开网站经 Cloudflare 可达 · 源�
 
 ### 12.1 自动观察公网路径
 
-用户不需要手动选择“直连”或“Cloudflare 代理”。应用以本轮 macOS 系统解析得到、用于当前公开访问的候选集合为分类依据，参考解析只作为对照，不能覆盖当前路径事实。系统候选不完整或与参考证据存在无法归一化的实质冲突时降级为“未确认”。应用按地址族描述当前观察到的公网路径，而不声称确认了 Cloudflare 控制台配置：
+用户不需要手动选择“直连”或“Cloudflare 代理”。应用以本轮当前操作系统解析得到、用于当前公开访问的候选集合为分类依据，参考解析只作为对照，不能覆盖当前路径事实。系统候选不完整或与参考证据存在无法归一化的实质冲突时降级为“未确认”。应用按地址族描述当前观察到的公网路径，而不声称确认了 Cloudflare 控制台配置：
 
 #### 观察到直达已登记服务器
 
@@ -580,7 +580,7 @@ Cloudflare 代理场景下，“测试源站直连”只作为按需深度动作
 
 ### 13.8 IP/跨境归因原则
 
-当前 Mac 的单点观测只能证明当前网络到特定服务端点的行为。
+当前设备的单点观测只能证明当前网络到特定服务端点的行为。
 
 - 单次超时不等于 IP 被阻断；
 - 多端口超时仍可能来自安全组、服务器防火墙、宕机、云厂商清洗或路由故障；
@@ -749,7 +749,7 @@ V1 仅本地保存：
 
 ### 15.3 存储要求
 
-- 使用 macOS Application Support 下的应用专属目录；
+- 使用操作系统标准的当前用户配置目录下的 ReachRun 专属目录；
 - 文件权限仅当前用户可读写；
 - 原子写入，崩溃不得破坏资产清单；
 - 不依赖浏览器 `localStorage`；
@@ -790,7 +790,7 @@ V1 仅本地保存：
 - 每次重定向重新执行同样校验；
 - 唯一私网连接例外是系统明确公布的当前 DNS resolver，且只允许受控 DNS 端口与协议；
 - 不执行用户拼接的 shell 命令；
-- 系统命令如 `scutil` 必须使用固定路径和固定参数。
+- 平台环境盘点若需要调用系统命令，必须由对应平台 adapter 使用固定程序、固定参数且不经过 shell；例如 macOS 的 `scutil` 只作 best-effort 配置证据。
 
 ### 16.3 资源限制
 
@@ -799,39 +799,36 @@ V1 仅本地保存：
 - 应用退出时取消所有连接并有界等待关闭；
 - 参考 resolver 连续失败时启用批次级熔断，避免放大请求。
 
-### 16.4 macOS Local Network Privacy
+### 16.4 平台网络权限与策略
 
-Apple 将“访问设备当前配置、位于局域网内的 DNS 服务器”列为 Local Network Privacy 的例外，V1 不应仅因直查当前 DNS 就主动申请局域网权限：
-
-- Phase 0 在目标 macOS 真机验证系统配置 DNS 的 UDP/TCP 行为；
-- V1 不连接其他私网目标，也不使用 Bonjour、组播或广播；
-- 若实现过程中出现意外权限提示，先定位实际触发的网络操作，不用权限文案掩盖未知行为；
-- 任何平台策略错误均不得被解释为域名 DNS 异常。
+- 本地 UI 只监听 loopback，不为外部设备开放端口；
+- V1 不连接用户配置之外的私网目标，也不使用 Bonjour、组播或广播；唯一私网连接例外仍是系统明确公布的当前 DNS resolver；
+- macOS 将访问当前配置的局域网 DNS 列为 Local Network Privacy 的例外，工具不应仅因直查当前 DNS 就主动申请局域网权限；
+- Windows、macOS 和 Linux 均须在真实设备验证启动、loopback、本地 DNS 与出站探测不会产生与实际行为不符的权限或防火墙引导；
+- 若出现意外权限提示或系统策略失败，先定位实际触发的操作，并将对应证据标记为不可用或降级；不得把平台策略错误解释为资产 DNS 或连通性异常。
 
 ## 17. 技术方案
 
-### 17.1 推荐技术栈
+### 17.1 已确定技术栈
 
-- 检测核心与本地服务：Go；
-- UI：原生 HTML/CSS/JavaScript；
-- 静态资源使用 `embed` 编译进二进制；
-- V1 目标：当前 Apple Silicon Mac；
-- Phase 0 使用 CLI；
-- 引擎验证后包装为可双击 `.app`；
-- V1 不做 Universal、Developer ID 签名和公证。
+- 检测核心、本地 HTTP 与进程生命周期：Go；
+- UI：React + React DOM + TypeScript `strict` + Vite；样式使用原生 CSS、CSS Modules 与 CSS Variables；
+- 浏览器通信使用原生 `fetch`、`ReadableStream` 与 `AbortController`；
+- Vite 只参与开发和构建，静态产物使用 Go `embed` 编译进可执行文件；发布用户不需要 Node、npm 或独立前端服务；
+- 为保留从源码克隆后只安装 Go 即可运行的自用路径，前端生产产物随仓库版本化，并由 CI 重建校验，任何人不得手工编辑产物；
+- 每个操作系统和 CPU 组合发布独立可执行文件；V1 至少覆盖用户实际使用的 macOS、Windows 与 Linux 设备，候选版本和架构矩阵不阻塞 Phase 0 启动，但必须在 Phase 0 通过前由真实设备清单与实测结果固化；
+- 各平台使用原生 runner 构建并验证，不以单机交叉编译成功替代系统网络行为测试；
+- V1 不使用 `.app`、Electron、Tauri、Wails、WebView 或其他客户端壳；自动打开默认浏览器失败时打印本地 URL；
+- Phase 0 先使用最小 CLI 和结构化 JSON 验证网络与平台能力，再建设完整 UI。
 
 ### 17.2 核心模块
 
-- `asset`：域名、服务器与服务端点模型及校验；
-- `store`：资产配置、最近观测摘要与比较基线摘要；
-- `environment`：接口、resolver 与代理迹象；
-- `systemlookup`：macOS 系统解析路径；
-- `dnsquery`：受控 UDP/TCP/DoH 适配器；
-- `webprobe`：系统路径、强制 IP、TLS/SNI 与 HTTP；
-- `serverprobe`：SSH identification 与服务器服务端点；
-- `verdict`：纯证据聚合与结论；
-- `change`：当前结果与比较基线的粗粒度对比；
-- `localserver`：本地 API、会话与静态 UI。
+- `application`：对本地浏览器 interface 提供查看状态、替换资产和执行检测三个用户意图，隐藏单活动批次、配置 revision、正式提交与临时复核规则；
+- `checkrun`：隐藏快速/深度队列、DNS/Web/SSH 探测、候选调度、重试、熔断、deadline 与证据收集；DNS、Web、SSH 等协议实现默认保持为该 module 的内部实现，而不是分别暴露浅 module；
+- `assessment`：纯证据聚合、粗粒度变化比较、置信度、关注原因与下一步建议；
+- `snapshotstore`：加载和原子保存版本化 JSON 快照，隐藏平台配置目录、schema migration、崩溃恢复与文件替换差异；
+- `localhost`：隐藏 loopback、token、Host/Origin、CSP、NDJSON、heartbeat、空闲退出、静态 UI 和浏览器打开；
+- `platform`：只承载确实因操作系统变化的 system resolver、网络环境盘点、浏览器打开与原子文件替换 adapter。
 
 核心检查接口保持简单：
 
@@ -839,13 +836,15 @@ Apple 将“访问设备当前配置、位于局域网内的 DNS 服务器”列
 RunCheck(ctx, request, emitEvent) error
 ```
 
-### 17.3 本地 API
+每次运行使用不可变资产快照与配置 revision；单资产网络失败返回结构化证据，不终止整个批次；取消传播到所有在途探测；只有完整“检测全部”成功提交后，才产生正式完成事件并推进最近观测与比较基线。
+
+### 17.3 本地 HTTP interface
 
 建议最小接口：
 
 - `GET /api/state`：资产、最近观测摘要、比较基线摘要和环境概览；
 - `PUT /api/assets`：保存规范化资产配置；存在活动检测时返回 `409 Conflict`；
-- `POST /api/check`：基于当前配置版本的不可变快照执行，接收 JSON 检测请求并返回 NDJSON 流；已有活动检测时返回 `409 Conflict`；
+- `POST /api/check`：基于当前配置版本的不可变快照执行，接收 JSON 检测请求并返回 NDJSON 流；已有活动检测时返回 `409 Conflict`；每个事件带协议版本、`run_id` 与单调递增序号，合法 terminal event 之后不得再发送事件；
 - `POST /api/heartbeat`：以空 JSON 对象 `{}` 刷新已认证页面会话活跃时间并返回 `204`；
 - `POST /api/shutdown`：接收空 JSON 对象 `{}` 并安全退出应用。
 
@@ -853,17 +852,33 @@ RunCheck(ctx, request, emitEvent) error
 
 页面有焦点与否都不改变会话语义：只要页面仍打开，就按固定间隔发送 heartbeat；进程仅在没有活动检测、且超过空闲阈值未收到任何已认证页面请求或 heartbeat 后退出。heartbeat 不携带资产、结果或环境信息。
 
-### 17.4 macOS 系统解析
+### 17.4 跨平台系统解析
 
-Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路径。不得把 `/etc/resolv.conf` 当作 macOS 唯一真相。
+Phase 0 必须验证 Go 在 macOS、Windows 和 Linux 上确实使用预期的系统解析路径。三个系统的 System Resolution 证据使用同一数据模型，但不假装底层语义或可取得字段完全相同。
 
-推荐分层：
+- 每次系统解析记录平台、实际 resolver backend 与能力等级；无法确认原生路径时明确标记 `degraded`，不得静默降级后仍声称代表系统实际路径；
+- macOS 优先验证 `net.DefaultResolver` 的原生多 resolver 行为，`scutil --dns` 只作 best-effort 配置快照；
+- Windows 优先验证 Go 的 Windows 原生解析路径，adapter 通过稳定系统 interface best-effort 盘点网卡与 DNS 配置；
+- Linux 优先保持 libc/NSS、`/etc/hosts`、systemd-resolved 与 split DNS 等系统语义；默认发布面向 glibc 的原生构建，不能为了完全静态分发而无提示改变解析语义；
+- `/etc/resolv.conf`、平台配置命令或系统 interface 只提供 Resolver Inventory，不能证明某次系统查询实际由哪个服务器回答；
+- 原始 UDP/TCP/DoH 查询始终使用独立、明确指定的 adapter，与 System Resolution 分开建模；
+- 如 Go 标准路径无法取得必需证据，只为已证明的缺口增加最薄平台 adapter，不预先引入 Swift、Rust 或另一套完整引擎。
 
-- `net.DefaultResolver`/原生 resolver 观察应用实际结果；
-- 构建与运行时验证没有因 `netgo` 等配置绕过 macOS 原生多 resolver 路径；
-- `scutil --dns` 仅作 best-effort 配置快照；
-- 原始 DNS 查询使用明确指定的 resolver；
-- 如标准 Go 路径不足，再评估最薄的 macOS 平台适配，不在验证前引入 Swift/cgo 大模块。
+### 17.5 浏览器 UI
+
+前端只保留两个有实质深度的 module：
+
+- `LocalBackend`：隐藏 token、请求头、HTTP 错误、NDJSON 跨 chunk/UTF-8 解析、取消传播与 terminal event 校验；生产使用 Fetch adapter，测试使用 scripted adapter；
+- `ReachRunModel`：使用纯 reducer 集中正式结果、活动批次、临时复核和界面状态，向 React 呈现层提供派生后的 View Model 与用户动作。
+
+不可破坏的状态规则：
+
+- 普通流式事件只更新活动批次，不直接修改正式结果；
+- 只有收到后端“完整批次已原子提交”的 terminal event 后，前端才一次替换正式快照；取消、断流、非法事件或意外 EOF 均不得改变正式结果；
+- 单项重测、重测待复核项和手动深度诊断只更新临时复核层；正式汇总、筛选计数和完成后排序只从正式快照派生；
+- 检测期间冻结行顺序，动态更新不关闭详情、不移动滚动位置且不抢夺键盘焦点；
+- 资产规范化、结果归因与建议仍由 Go 端负责，React 不维护第二套领域规则；
+- V1 不引入 Next.js/SSR、前端路由、Redux/Zustand/XState、TanStack Query、Axios、Tailwind/shadcn、UI 套件、WebSocket 或 Service Worker；若未来需求使其中某项产生真实收益，再通过新的技术决策评估。
 
 ## 18. 性能与可靠性
 
@@ -879,15 +894,15 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 - 单个资产崩溃或超时不得影响其他资产；
 - 所有 goroutine、连接和响应体必须有关闭路径。
 
-## 19. Phase 0：网络能力 Spike
+## 19. Phase 0：跨平台网络能力 Spike
 
-正式 UI 前先用最小 CLI 验证证据是否可靠。
+正式检测引擎与完整 UI 前，先在 macOS、Windows 和 Linux 使用同一最小 CLI 与版本化 JSON probe evidence envelope 验证网络和平台能力。该 envelope 只固定探测来源、平台/backend、能力等级、标准化结果与错误类别；Phase 1 在其上扩展完整资产、正式结果和变化模型。CI runner 用于重复 contract test，真实设备用于验证 resolver、VPN/split DNS、权限与网络路径；两者不能互相替代。
 
 ### 19.1 域名能力
 
-1. macOS 系统 A/AAAA 解析；
-2. resolver 配置快照；
-3. 当前配置 DNS 位于路由器私网地址时的 UDP/TCP 查询行为，并确认不会出现意外 Local Network 权限提示；
+1. 三个平台的系统 A/AAAA 解析，并记录实际 resolver backend 与 `native/degraded` 能力；
+2. 各平台 resolver 配置快照，允许平台无法安全取得的字段明确缺失；
+3. 当前配置 DNS 位于路由器私网地址时的 UDP/TCP 查询行为，并确认不会出现无法解释的权限、防火墙或系统策略提示；
 4. 两个独立参考 DoH；
 5. 异常条件下 TCP DNS；
 6. 默认 HTTPS 与实际远端 IP；
@@ -904,7 +919,7 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 4. 无 hostname 时的有限 TLS 结论；
 5. 连接拒绝、超时、重置和协议错误分层；
 6. IPv4/IPv6 服务器端点；
-7. 当前 Mac 缺少 IPv6 路由时的安全降级；
+7. 当前设备缺少 IPv6 路由时的安全降级；
 8. 失败重试与批次取消。
 
 ### 19.3 场景矩阵
@@ -931,14 +946,21 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 - 原 hostname 返回重定向、后续目标超时；
 - TLS/SNI 配置错误；
 - Cloudflare 公开网站正常但源站不允许直连；
-- 配置服务器 IPv6、但当前 Mac 没有可用 IPv6 路由；
-- VPN/TUN 开启与关闭；
-- 当前配置 DNS 为局域网地址时的真实行为。
+- 配置服务器 IPv6、但当前设备没有可用 IPv6 路由；
+- macOS 多 resolver、Windows 系统 DNS、Linux libc/NSS 与 systemd-resolved 可用时的实际行为；
+- VPN/TUN 与 split DNS 开启、关闭；
+- 当前配置 DNS 为局域网地址时的真实行为；
+- 用占位页验证默认浏览器成功打开与打开失败后终端 URL 回退；
 
 关键场景至少重复 3 轮，避免把暂态网络波动写成固定规则。
 
 ### 19.4 Spike 通过标准
 
+- macOS、Windows 和 Linux 均能由目标平台原生构建产出可运行文件，并输出同一版本的 JSON probe evidence envelope；
+- 三个平台的 System Resolution 均能说明实际 backend 与能力等级；不能证明原生语义时明确标记 `degraded`，不伪造 TTL、RCODE 或回答服务器；
+- 相同受控场景在三个系统得到一致的标准化 evidence 类别，平台原始错误字符串不得直接改变产品结论；
+- 占位页 BrowserOpener adapter 失败不阻塞 Spike，终端 URL 仍可访问；正式 UI、生命周期和发布产物集成留到 Phase 3；
+- 取消后不产生成功 terminal event、不遗留连接，并能在有界时间内退出；Phase 0 尚不建设正式状态存储；
 - 正常 Cloudflare 域名连续 3 轮不误报；
 - NXDOMAIN 与 NODATA 分开；
 - 坏 AAAA 不掩盖 IPv4 可用；
@@ -954,15 +976,15 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 
 ## 20. 开发顺序
 
-### Phase 0：网络能力 Spike
+### Phase 0：跨平台网络能力 Spike
 
-- 验证 §19 的关键能力与误判边界；
-- 输出 CLI 和结构化 JSON 仅用于开发调试；
-- 不建设正式 UI。
+- 在 macOS、Windows 和 Linux 验证 §19 的关键能力、统一 probe evidence envelope 与误判边界；
+- 输出 CLI 和最小 probe evidence envelope，用于验证 Phase 1 可依赖的跨平台探测 contract；
+- 只用占位页验证 BrowserOpener adapter 与 URL 回退，不建设正式 UI；
 
 ### Phase 1：V1 检测引擎
 
-- 统一资产、证据、结果与变化数据模型；
+- 在 Phase 0 probe evidence envelope 上扩展完整资产、证据、正式结果与变化数据模型；
 - 快速/深度两级调度；
 - 并发、超时、重试、取消和熔断；
 - 纯 verdict 单元测试与可复现 fixture；
@@ -977,19 +999,20 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 - 详情、重测、深度诊断和复制摘要；
 - 明确退出。
 
-### Phase 3：macOS 自用交付
+### Phase 3：跨平台自用交付
 
-- Apple Silicon `.app`；
+- 为已确认支持的 OS/CPU 组合分别生成单一可执行文件；
 - 单实例或安全重开；
-- 自动打开浏览器；
-- 确认应用不会因受控检测产生意外 Local Network 权限提示；
+- 自动打开默认浏览器，失败时打印本地 URL；
+- 确认工具不会因受控检测产生无法解释的权限或防火墙提示；
 - 空闲退出、显式退出和崩溃恢复；
-- 在真实厦门家庭宽带验收。
+- 在 JC 的真实 macOS、Windows、Linux 设备及其实际网络中验收。
 
 ## 21. 验收标准
 
 ### 21.1 资产与日常流程
 
+- macOS、Windows 和 Linux 的目标构建均可从终端启动，自动打开同一套浏览器 UI；打开失败时终端 URL 可用；
 - 首次添加 30 个域名和多台服务器后可正常保存；
 - 重新打开应用无需重新输入；
 - 服务器未启用 SSH 和网站中的任何一项时无法保存；
@@ -1033,7 +1056,7 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 - 无关联域名但 TLS 握手成功时显示“链路可达 · 身份未验证 · 无需关注”；TCP 成功但 TLS 失败时显示“无法判断 · 可能需要域名/SNI”；
 - SSH 服务响应、网站失败时不显示 IP 整体不可达；
 - 多端口超时不输出 GFW 确定性结论；
-- 当前 Mac 没有可用 IPv6 路由时，服务器 IPv6 显示检测条件不足，不导致“部分可达”。
+- 当前设备没有可用 IPv6 路由时，服务器 IPv6 显示检测条件不足，不导致“部分可达”。
 
 ### 21.4 Cloudflare 关联
 
@@ -1064,9 +1087,9 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 
 安全组、服务器防火墙、服务宕机、云厂商清洗、运营商路由和策略性阻断可能呈现相同超时。V1 只报告当前端点行为，不输出 GFW 确定性结论。
 
-### 22.2 macOS resolver 证据有限
+### 22.2 跨平台 resolver 证据差异
 
-系统解析结果、resolver 配置和原始 DNS 查询是不同证据。数据模型允许字段缺失，并通过 Spike 验证实际能力。
+macOS、Windows 和 Linux 的系统解析路径、配置证据与取消行为并不完全等价。System Resolution、Resolver Inventory 和原始 DNS 查询保持为不同证据；数据模型允许字段缺失并记录 backend/能力等级，通过三平台 Spike 验证实际语义。
 
 ### 22.3 CDN/GeoDNS 合法差异
 
@@ -1080,9 +1103,9 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 
 源站可能只允许 Cloudflare 或使用 Origin CA。源站直连默认是诊断证据，不影响公开路径结论。
 
-### 22.6 macOS Local Network Privacy
+### 22.6 平台权限与系统策略
 
-系统当前配置的局域网 DNS 属于 Apple 说明的权限例外。Phase 0 仍需验证没有其他操作意外触发提示；若触发，应找到真实原因，不将其包装为正常产品流程。
+macOS 当前配置的局域网 DNS 属于 Apple 说明的权限例外，Windows 和 Linux 也可能受本机防火墙或安全策略影响。Phase 0 必须分别验证；若出现提示或失败，应找到真实原因并降级对应证据，不将其包装为正常流程或资产故障。
 
 ### 22.7 浏览器 UI 生命周期
 
@@ -1091,6 +1114,10 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 ### 22.8 localhost 攻击面
 
 恶意网页可能探测本地端口或诱导连接。使用高熵 token、精确 Host/Origin、无 CORS、严格目标地址和受控协议降低风险。
+
+### 22.9 Linux 便携性与系统解析真实性
+
+完全静态、跨所有 Linux 发行版运行的二进制可能绕过 libc/NSS，从而改变“系统解析”的含义。V1 优先保证用户实际 resolver 语义，先明确支持经 Phase 0 验证的 glibc 发行版与架构；其他组合不得笼统声称已支持。
 
 ## 23. 已确定的产品决策
 
@@ -1109,22 +1136,31 @@ Phase 0 必须验证 Go 在目标 macOS 上确实使用预期的系统解析路�
 - DoH 是参考解析，不是“干净真值”；
 - 最高 DNS 标签为“高可信本地解析路径异常”；
 - V1 不输出“GFW 已阻断”结论；
-- Phase 0 先做 Apple Silicon CLI，验证后再包装 `.app`；
-- V1 不做 Universal、签名、公证和远程探针。
+- V1 采用跨平台 Go 本地进程，在 macOS、Windows 和 Linux 上自动打开系统浏览器，不使用客户端壳；
+- UI 采用 React + TypeScript `strict` + Vite，静态产物嵌入每个平台的可执行文件；
+- Phase 0 先在三平台验证最小 probe evidence envelope、系统 resolver adapter 与关键网络能力；
+- 每个 OS/CPU 组合分别发布二进制；V1 不做图形安装器、自动更新和远程探针。
 
 ## 24. 待确认事项
 
-以下事项不阻塞 Phase 0：
+以下事项不阻塞 Phase 0 启动；其中支持矩阵必须在 Phase 0 通过前确认：
 
 1. 两个参考 DoH resolver 的最终组合；
 2. 并发、超时、重试和空闲退出的最终默认值；
-3. V1 `.app` 使用纯 Go 包装还是极薄的 macOS launcher；
+3. JC 实际设备对应的精确 OS 版本、CPU 架构与 Linux 发行版支持矩阵；此项不阻塞 Phase 0 启动，但阻塞 Phase 0 通过与发布矩阵固化；
 4. Cloudflare IP 范围采用随版本内置还是可选联网更新；
 5. V1.1 是否加入一个独立境外对照探针。
 
 ## 25. 参考依据
 
 - [Go `net` Name Resolution](https://pkg.go.dev/net#hdr-Name_Resolution)
+- [Go supported platforms](https://go.dev/doc/install/source)
+- [Go `embed`](https://pkg.go.dev/embed)
+- [Go `os.UserConfigDir`](https://pkg.go.dev/os#UserConfigDir)
+- [React：Choosing the State Structure](https://react.dev/learn/choosing-the-state-structure)
+- [React `useReducer`](https://react.dev/reference/react/useReducer)
+- [TypeScript `strict`](https://www.typescriptlang.org/tsconfig/strict.html)
+- [Vite：Building for Production](https://vite.dev/guide/build)
 - [Apple Local Network Privacy](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)
 - [Cloudflare Proxy Status](https://developers.cloudflare.com/dns/proxy-status/)
 - [Cloudflare IP Addresses](https://developers.cloudflare.com/fundamentals/concepts/cloudflare-ip-addresses/)

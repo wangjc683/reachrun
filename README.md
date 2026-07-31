@@ -2,9 +2,9 @@
 
 ReachRun is a local, one-click reachability checkup for your domains and servers.
 
-> Status: early design phase. There is no runnable release yet.
+> Status: architecture decided; cross-platform capability development is starting. There is no runnable release yet.
 
-ReachRun runs from your current Mac and helps answer three questions:
+ReachRun is designed to run locally on your current macOS, Windows, or Linux computer, open its interface in your default browser, and help answer three questions:
 
 - Which saved domains and servers are reachable right now?
 - What changed since the last comparable check?
@@ -18,6 +18,7 @@ ReachRun runs from your current Mac and helps answer three questions:
 - Check server endpoints over SSH, HTTP, and HTTPS.
 - Run deeper diagnostics only for failures, changes, or inconclusive results.
 - Keep conclusions conservative and explain the evidence behind them.
+- Ship as one executable per supported operating system and CPU architecture, without a desktop-app shell.
 
 ReachRun does not run continuously, send alerts, or claim that a failure was definitively caused by the Great Firewall. All checks originate from the user's current network.
 
@@ -30,6 +31,7 @@ Asset lists and results are stored locally and are not uploaded to a ReachRun-op
 The current product requirements are documented in Chinese:
 
 - [Product Requirements Document](docs/product/PRD.md)
+- [Architecture Decision Records](docs/decisions/README.md)
 
 ## Agent contributors
 
