@@ -24,15 +24,17 @@ ReachRun does not run continuously, send alerts, or claim that a failure was def
 
 ## Development preview
 
-The first Phase 0 slice can inspect the addresses returned by the current operating system:
+The current Phase 0 CLI can inspect three deliberately separate kinds of name-resolution evidence:
 
 ```bash
 git clone https://github.com/wangjc683/reachrun.git
 cd reachrun
 go run ./cmd/reachrun resolve localhost
+go run ./cmd/reachrun resolver-inventory
+go run ./cmd/reachrun dns-observe udp current A example.com
 ```
 
-This requires Go 1.26 or newer and prints one versioned JSON evidence envelope. It is a developer diagnostic, not the final one-click browser experience. See [Development Setup](docs/development/SETUP.md) for tests and Linux native-resolver requirements.
+These commands distinguish operating-system resolution, configured resolver candidates, and a controlled query to one explicit resolver. Each command prints one versioned JSON evidence envelope. They require Go 1.26 or newer and are developer diagnostics, not the final one-click browser experience. See [Development Setup](docs/development/SETUP.md) for the full command set, tests, and platform limitations.
 
 ## Privacy
 

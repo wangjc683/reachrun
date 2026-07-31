@@ -55,6 +55,7 @@
 | Phase 0 DNS Spike | `GLOSSARY.md`；PRD 第 10、16.2、16.4、17.4、19.1、19.3–19.4 节；ADR 0001；`PROJECT_STATE.md` | 涉及 Cloudflare 时再读第 12 节 |
 | Phase 0 服务器 Spike | `GLOSSARY.md`；PRD 第 11、16.2、19.2–19.4 节；ADR 0001；`PROJECT_STATE.md` | 涉及域名关联时再读第 12 节 |
 | 修改 probe envelope、System Resolver 或 scripted adapter | `GLOSSARY.md`；`docs/architecture/OVERVIEW.md`；目标代码与测试 | 运行命令读 `docs/development/SETUP.md`；语义变化再读 PRD 第 17.4、19 节与 ADR 0001 |
+| 修改 Resolver Inventory、DNS Observation 或对应 scripted adapter | `GLOSSARY.md`；`docs/architecture/OVERVIEW.md`；目标代码与测试 | 运行命令读 `docs/development/SETUP.md`；语义变化再读 PRD 第 10、16、17.4、19 节与 ADR 0001 |
 | 本地运行、构建、格式化、测试或 CI | `docs/development/SETUP.md`；目标 workflow/代码 | 只有行为或架构变化时再读对应权威文档 |
 | 测试某项行为 | 对应产品章节、验收条目、目标代码与现有测试 | 跨 module 才读架构文档或 ADR |
 | 整体验收 | PRD 第 21 节及失败条目对应的产品章节 | 性能验收再读第 18 节 |

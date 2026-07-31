@@ -16,6 +16,9 @@ func Validate(result Result) error {
 	if result.Probe != probe.KindSystemResolution {
 		return fmt.Errorf("probe must be %q", probe.KindSystemResolution)
 	}
+	if result.Failure != nil && !validFailureCode(result.Failure.Code) {
+		return fmt.Errorf("unsupported system resolver failure code %q", result.Failure.Code)
+	}
 	normalizedHostname, inputErr := normalizeHostname(result.Input.Hostname)
 	if normalizedHostname != result.Input.Hostname {
 		return fmt.Errorf("input hostname must be normalized")
@@ -68,4 +71,17 @@ func Validate(result Result) error {
 	}
 
 	return nil
+}
+
+func validFailureCode(code probe.FailureCode) bool {
+	switch code {
+	case probe.FailureInvalidInput,
+		probe.FailureNameUnresolved,
+		probe.FailureTimeout,
+		probe.FailureResolutionFailure,
+		probe.FailureCancelled:
+		return true
+	default:
+		return false
+	}
 }

@@ -297,6 +297,19 @@ func TestValidateRejectsInputOutcomeMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsFailureCodeOutsideSystemResolverContract(t *testing.T) {
+	t.Parallel()
+
+	result := validSystemResolutionResult([]Address{{IP: "192.0.2.1", Family: FamilyIPv4}})
+	result.Outcome = probe.OutcomeFailed
+	result.Evidence = nil
+	result.Failure = &probe.Failure{Code: probe.FailureCode("other_probe_failure")}
+
+	if err := Validate(result); err == nil {
+		t.Fatal("Validate() error = nil, want unsupported failure code error")
+	}
+}
+
 func validSystemResolutionResult(addresses []Address) Result {
 	evidence := Evidence{Addresses: addresses}
 	return Result{

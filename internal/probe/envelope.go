@@ -17,6 +17,12 @@ const (
 	// KindSystemResolution observes the addresses returned by the operating
 	// system's normal hostname resolution path.
 	KindSystemResolution Kind = "system_resolution"
+	// KindResolverInventory observes configured resolver candidates without
+	// claiming that any candidate answered a system-resolution attempt.
+	KindResolverInventory Kind = "resolver_inventory"
+	// KindDNSObservation records one controlled DNS exchange against an
+	// explicitly configured resolver and transport.
+	KindDNSObservation Kind = "dns_observation"
 )
 
 // Capability describes how faithfully a probe source provides the intended
@@ -37,7 +43,8 @@ const (
 	OutcomeCancelled Outcome = "cancelled"
 )
 
-// FailureCode is a stable, machine-readable failure category. Human-readable
+// FailureCode is a stable, machine-readable failure category. Each concrete
+// probe defines which non-empty codes belong to its contract. Human-readable
 // operating-system messages belong in Failure.Detail and must not drive product
 // decisions.
 type FailureCode string
@@ -134,8 +141,8 @@ func (e Envelope[I, E]) Validate() error {
 		if e.Failure == nil {
 			return fmt.Errorf("failed outcome must include failure")
 		}
-		if !e.Failure.Code.valid() || e.Failure.Code == FailureCancelled {
-			return fmt.Errorf("failed outcome has unsupported failure code %q", e.Failure.Code)
+		if e.Failure.Code == "" || e.Failure.Code == FailureCancelled {
+			return fmt.Errorf("failed outcome must include a non-cancelled failure code")
 		}
 	case OutcomeCancelled:
 		if e.Evidence != nil {
@@ -153,17 +160,4 @@ func (e Envelope[I, E]) Validate() error {
 
 func (c Capability) valid() bool {
 	return c == CapabilityNative || c == CapabilityDegraded
-}
-
-func (c FailureCode) valid() bool {
-	switch c {
-	case FailureInvalidInput,
-		FailureNameUnresolved,
-		FailureTimeout,
-		FailureResolutionFailure,
-		FailureCancelled:
-		return true
-	default:
-		return false
-	}
 }

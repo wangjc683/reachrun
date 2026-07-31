@@ -55,5 +55,7 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Smoke test Phase 0 CLI
-        run: go run ./cmd/reachrun resolve localhost
+      - name: Smoke test Phase 0 platform probes
+        run: |
+          go run ./cmd/reachrun resolve localhost
+          go run ./cmd/reachrun resolver-inventory

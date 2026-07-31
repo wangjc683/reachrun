@@ -12,7 +12,7 @@
 
 ## Current phase
 
-ReachRun 处于 **Phase 0 in progress / first system-resolution slice implemented** 阶段。
+ReachRun 处于 **Phase 0 in progress / resolver inventory and explicit DNS observation slice implemented** 阶段。
 
 已经具备：
 
@@ -21,23 +21,27 @@ ReachRun 处于 **Phase 0 in progress / first system-resolution slice implemente
 - 领域术语表和 Agent 文档索引；
 - 已接受的跨平台 Go 本地进程 + 系统浏览器架构（ADR 0001）；
 - 已接受的 React + TypeScript + Vite 内嵌 UI 方案（ADR 0002）；
-- Go module 与临时 `reachrun resolve <hostname>` Phase 0 CLI；
+- Go module 与 Phase 0 CLI；
 - 版本化、类型化的 probe evidence envelope 及 terminal invariant；
 - 一个单方法 System Resolver seam、生产 adapter 与 scripted test adapter；
 - 系统地址顺序保留、去重、IPv4-mapped 规范化、typed error 归类和迟到取消结果隔离；
+- macOS `scutil --dns`、Windows `GetAdaptersAddresses` 与 Linux `/etc/resolv.conf` Resolver Inventory adapter；
+- 显式 UDP、TCP 与 RFC 8484 DoH DNS Observation，当前支持 A、AAAA 和 CNAME；
+- RCODE、flags、CNAME 链、SOA、Authority NS、实际 endpoint 与传输元数据等 typed evidence；
+- `reachrun resolve`、`reachrun resolver-inventory` 与 `reachrun dns-observe` 三条命令；
 - macOS、Windows 与 Linux 原生 resolver contract test，以及三平台 GitHub Actions workflow；
 - 当前实现架构和可复现开发命令。
 
 尚未具备：
 
-- Resolver Inventory 与显式 UDP/TCP/DoH DNS Observation；
+- HTTPS/SVCB DNS Observation 与 AliasMode 重启规则；
 - Web、TLS/SNI、HTTP 与 SSH identification probe；
 - 批次编排、assessment、持久化、本地 HTTP 和前端工程；
 - 面向用户的“启动后打开浏览器”应用流程；
 - 可运行二进制或 GitHub Release；
 - 经目标 macOS、Windows、Linux 设备实测过的网络能力结论。
 
-第一条切片已经进入正式开发。当前代码和本地测试证明 envelope 与本机 adapter contract；GitHub-hosted runner 状态和真实设备网络行为仍必须现场核验，不能由本快照推断。
+前两条探测切片已进入正式开发。当前代码和本地测试证明 envelope、System Resolution、Resolver Inventory 与 DNS Observation adapter contract；GitHub-hosted runner 状态和真实设备网络行为仍必须现场核验，不能由本快照推断。
 
 ## Next intended milestone
 
@@ -45,7 +49,7 @@ ReachRun 处于 **Phase 0 in progress / first system-resolution slice implemente
 
 Spike 应先建立版本化 JSON probe evidence envelope 和最小 CLI，再覆盖三平台 System Resolution adapter、resolver inventory、显式 DNS UDP/TCP/DoH、IPv4/IPv6、指定 IP + 正确 Host/SNI、SSH identification、HTTP/HTTPS、超时、取消、占位页浏览器 URL 回退与平台策略表现。该 envelope 只固定跨平台探测来源、能力、结果与错误类别；Phase 1 再扩展为完整资产、结果和变化模型。通过标准和场景矩阵以 PRD 第 19 节为准，不在本文件重复维护。
 
-第一份实现切片已完成。下一份切片优先建立 Resolver Inventory 与显式 DNS Observation（UDP/TCP/DoH）的清晰证据边界，并复用 envelope 生命周期，不进入 React UI。随后再按 PRD §19 覆盖地址族、指定 IP + Host/SNI、Web、SSH、取消和平台策略场景。
+前两份实现切片已完成。下一份切片建立指定 IP + 正确 Host/SNI 的 Web/TLS/HTTP probe，并把 IPv4/IPv6 连接证据分开，仍不进入 React UI。这会先验证网站体检最核心的“DNS 给出什么”与“对哪个 IP 建连”能否彻底分开，避免把 DNS、TLS 和 HTTP 失败混成一个结果。HTTPS/SVCB 与 AliasMode 在完整域名深度诊断编排前补齐；随后再按 PRD §19 覆盖 SSH、取消和平台策略场景。
 
 ## Open decisions
 

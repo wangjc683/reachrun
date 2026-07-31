@@ -45,7 +45,10 @@ func TestEnvelopeValidateAcceptsTerminalShapes(t *testing.T) {
 			envelope := validTestEnvelope()
 			envelope.Outcome = OutcomeFailed
 			envelope.Evidence = nil
-			envelope.Failure = &Failure{Code: FailureNameUnresolved, Detail: "not found"}
+			envelope.Failure = &Failure{
+				Code:   FailureCode("probe_specific_failure"),
+				Detail: "probe-owned failure",
+			}
 			return envelope
 		}(),
 		"cancelled": func() Envelope[testInput, testEvidence] {
@@ -127,6 +130,11 @@ func TestEnvelopeValidateRejectsBrokenInvariants(t *testing.T) {
 		"failure with evidence": func(envelope *Envelope[testInput, testEvidence]) {
 			envelope.Outcome = OutcomeFailed
 			envelope.Failure = &Failure{Code: FailureResolutionFailure}
+		},
+		"failure with empty code": func(envelope *Envelope[testInput, testEvidence]) {
+			envelope.Outcome = OutcomeFailed
+			envelope.Evidence = nil
+			envelope.Failure = &Failure{}
 		},
 		"failure with cancelled code": func(envelope *Envelope[testInput, testEvidence]) {
 			envelope.Outcome = OutcomeFailed
