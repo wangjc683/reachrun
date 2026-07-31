@@ -1,0 +1,17 @@
+.DS_Store
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Build and test output
+/bin/
+/build/
+/dist/
+/coverage/
+*.out
+*.test
+
+# Local ReachRun state
+/data/
