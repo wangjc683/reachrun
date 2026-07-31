@@ -29,7 +29,11 @@ Asset lists and results are stored locally and are not uploaded to a ReachRun-op
 
 The current product requirements are documented in Chinese:
 
-- [Product Requirements Document](docs/ReachRun%EF%BD%9C%E6%9C%AC%E5%9C%B0%E4%BA%92%E8%81%94%E7%BD%91%E8%B5%84%E4%BA%A7%E8%BF%9E%E9%80%9A%E6%80%A7%E4%BD%93%E6%A3%80%E5%B7%A5%E5%85%B7%20PRD.md)
+- [Product Requirements Document](docs/product/PRD.md)
+
+## Agent contributors
+
+Start with [AGENTS.md](AGENTS.md). It is the canonical index for loading only the context required by a task.
 
 ## License
 
