@@ -2,7 +2,7 @@
 
 ReachRun is a local, one-click reachability checkup for your domains and servers.
 
-> Status: architecture decided; cross-platform capability development is starting. There is no runnable release yet.
+> Status: Phase 0 capability development is in progress. A source-only diagnostic CLI is runnable; there is no browser UI or release binary yet.
 
 ReachRun is designed to run locally on your current macOS, Windows, or Linux computer, open its interface in your default browser, and help answer three questions:
 
@@ -22,6 +22,18 @@ ReachRun is designed to run locally on your current macOS, Windows, or Linux com
 
 ReachRun does not run continuously, send alerts, or claim that a failure was definitively caused by the Great Firewall. All checks originate from the user's current network.
 
+## Development preview
+
+The first Phase 0 slice can inspect the addresses returned by the current operating system:
+
+```bash
+git clone https://github.com/wangjc683/reachrun.git
+cd reachrun
+go run ./cmd/reachrun resolve localhost
+```
+
+This requires Go 1.26 or newer and prints one versioned JSON evidence envelope. It is a developer diagnostic, not the final one-click browser experience. See [Development Setup](docs/development/SETUP.md) for tests and Linux native-resolver requirements.
+
 ## Privacy
 
 Asset lists and results are stored locally and are not uploaded to a ReachRun-operated server. Checks still contact the configured DNS/DoH providers and the target domains or servers as required.
@@ -31,6 +43,7 @@ Asset lists and results are stored locally and are not uploaded to a ReachRun-op
 The current product requirements are documented in Chinese:
 
 - [Product Requirements Document](docs/product/PRD.md)
+- [Current Architecture](docs/architecture/OVERVIEW.md)
 - [Architecture Decision Records](docs/decisions/README.md)
 
 ## Agent contributors

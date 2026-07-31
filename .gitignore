@@ -12,6 +12,8 @@
 /coverage/
 *.out
 *.test
+/reachrun
+/reachrun.exe
 
 # Local ReachRun state
 /data/

@@ -52,7 +52,7 @@
 4. 从现有文件拆出后不会复制事实；
 5. `AGENTS.md` 能为它增加明确的任务路由。
 
-项目当前尚无实现代码，因此不预建空的 architecture、development、testing 或 release 文档。第一批真实 module 出现后，如果 PRD 某组章节会被反复独立读取，再把它迁为相应的 spec 或架构文档，并在原位置改成链接。
+在对应的真实职责出现前，不预建空的 architecture、development、testing 或 release 文档。第一批真实 module 出现后，如果 PRD 某组章节会被反复独立读取，再把它迁为相应的 spec 或架构文档，并在原位置改成链接；已有主题文档也只能描述现场存在的代码、命令与流程。
 
 以下事件会直接触发扩展评估：
 

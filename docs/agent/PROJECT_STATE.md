@@ -12,7 +12,7 @@
 
 ## Current phase
 
-ReachRun 处于 **implementation-ready / Phase 0 starting** 阶段。
+ReachRun 处于 **Phase 0 in progress / first system-resolution slice implemented** 阶段。
 
 已经具备：
 
@@ -21,25 +21,31 @@ ReachRun 处于 **implementation-ready / Phase 0 starting** 阶段。
 - 领域术语表和 Agent 文档索引；
 - 已接受的跨平台 Go 本地进程 + 系统浏览器架构（ADR 0001）；
 - 已接受的 React + TypeScript + Vite 内嵌 UI 方案（ADR 0002）；
-- 已定义 Phase 0 验收门槛：macOS、Windows、Linux 必须共用最小 probe evidence envelope，并由平台 adapter 保持系统 resolver 真实性。
+- Go module 与临时 `reachrun resolve <hostname>` Phase 0 CLI；
+- 版本化、类型化的 probe evidence envelope 及 terminal invariant；
+- 一个单方法 System Resolver seam、生产 adapter 与 scripted test adapter；
+- 系统地址顺序保留、去重、IPv4-mapped 规范化、typed error 归类和迟到取消结果隔离；
+- macOS、Windows 与 Linux 原生 resolver contract test，以及三平台 GitHub Actions workflow；
+- 当前实现架构和可复现开发命令。
 
 尚未具备：
 
-- 应用源代码；
-- Go module、前端工程或可执行的 CLI；
-- 构建、测试或发布流程；
+- Resolver Inventory 与显式 UDP/TCP/DoH DNS Observation；
+- Web、TLS/SNI、HTTP 与 SSH identification probe；
+- 批次编排、assessment、持久化、本地 HTTP 和前端工程；
+- 面向用户的“启动后打开浏览器”应用流程；
 - 可运行二进制或 GitHub Release；
 - 经目标 macOS、Windows、Linux 设备实测过的网络能力结论。
 
-技术选择已经确定，因此可以进入正式开发。Accepted ADR 表示应按该方向实现，不表示任何 module 已经存在，也不表示系统 resolver、取消、分发或网络结论已经通过验证。
+第一条切片已经进入正式开发。当前代码和本地测试证明 envelope 与本机 adapter contract；GitHub-hosted runner 状态和真实设备网络行为仍必须现场核验，不能由本快照推断。
 
 ## Next intended milestone
 
-执行 PRD 第 19 节定义的 **Phase 0：跨平台网络能力 Spike**。这是正式开发的第一阶段，不是额外的需求讨论。
+继续执行 PRD 第 19 节定义的 **Phase 0：跨平台网络能力 Spike**。
 
 Spike 应先建立版本化 JSON probe evidence envelope 和最小 CLI，再覆盖三平台 System Resolution adapter、resolver inventory、显式 DNS UDP/TCP/DoH、IPv4/IPv6、指定 IP + 正确 Host/SNI、SSH identification、HTTP/HTTPS、超时、取消、占位页浏览器 URL 回退与平台策略表现。该 envelope 只固定跨平台探测来源、能力、结果与错误类别；Phase 1 再扩展为完整资产、结果和变化模型。通过标准和场景矩阵以 PRD 第 19 节为准，不在本文件重复维护。
 
-第一份实现切片应只完成：Go module 与 Phase 0 CLI 骨架、版本化 probe evidence envelope、跨平台 System Resolver interface、测试 adapter，以及三平台原生 resolver contract test。不要在这个切片中提前建设完整 React UI、所有协议探测或发布包装。
+第一份实现切片已完成。下一份切片优先建立 Resolver Inventory 与显式 DNS Observation（UDP/TCP/DoH）的清晰证据边界，并复用 envelope 生命周期，不进入 React UI。随后再按 PRD §19 覆盖地址族、指定 IP + Host/SNI、Web、SSH、取消和平台策略场景。
 
 ## Open decisions
 
@@ -55,4 +61,4 @@ git log -5 --oneline
 rg --files
 ```
 
-有代码后，再运行仓库当时定义的格式化、静态检查与测试命令；不要从本快照推断它们已经存在或通过。
+当前稳定命令见 [`docs/development/SETUP.md`](../development/SETUP.md)。仍需现场运行，不能从本快照推断它们已经通过。

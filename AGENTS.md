@@ -31,6 +31,8 @@
 | 领域术语与用户文案边界 | [`docs/product/GLOSSARY.md`](docs/product/GLOSSARY.md) |
 | 当前技术方案 | PRD 第 17 节；选择理由与不可逆取舍见对应 Accepted ADR，能力是否已验证仍以代码、测试与 Phase 0 实测为准 |
 | 已接受的技术决策及理由 | [`docs/decisions/README.md`](docs/decisions/README.md) 及对应 ADR |
+| 当前已实现的 module、interface 与证据契约 | [`docs/architecture/OVERVIEW.md`](docs/architecture/OVERVIEW.md) |
+| 开发环境、运行、构建与验证命令 | [`docs/development/SETUP.md`](docs/development/SETUP.md) |
 | 当前项目阶段与下一里程碑 | [`docs/agent/PROJECT_STATE.md`](docs/agent/PROJECT_STATE.md)，随后必须现场核验 |
 | 当前实现行为 | 代码、测试与实际运行结果 |
 | 分支、提交、CI、发布和 GitHub 状态 | `git`、测试命令、`gh` 等实时工具输出 |
@@ -52,6 +54,8 @@
 | 存储、本地 API、生命周期或安全 | PRD 第 15–18、21 节 | 技术取舍再读相关 ADR |
 | Phase 0 DNS Spike | `GLOSSARY.md`；PRD 第 10、16.2、16.4、17.4、19.1、19.3–19.4 节；ADR 0001；`PROJECT_STATE.md` | 涉及 Cloudflare 时再读第 12 节 |
 | Phase 0 服务器 Spike | `GLOSSARY.md`；PRD 第 11、16.2、19.2–19.4 节；ADR 0001；`PROJECT_STATE.md` | 涉及域名关联时再读第 12 节 |
+| 修改 probe envelope、System Resolver 或 scripted adapter | `GLOSSARY.md`；`docs/architecture/OVERVIEW.md`；目标代码与测试 | 运行命令读 `docs/development/SETUP.md`；语义变化再读 PRD 第 17.4、19 节与 ADR 0001 |
+| 本地运行、构建、格式化、测试或 CI | `docs/development/SETUP.md`；目标 workflow/代码 | 只有行为或架构变化时再读对应权威文档 |
 | 测试某项行为 | 对应产品章节、验收条目、目标代码与现有测试 | 跨 module 才读架构文档或 ADR |
 | 整体验收 | PRD 第 21 节及失败条目对应的产品章节 | 性能验收再读第 18 节 |
 | 架构、依赖或模块 interface 变化 | PRD 第 17 节；ADR 索引；相关产品章节 | 有代码后读取目标模块与测试 |
@@ -78,6 +82,8 @@
 AGENTS.md                         # 本索引；Agent 唯一稳定入口
 README.md                         # 面向开源访问者
 docs/
+├── architecture/
+│   └── OVERVIEW.md               # 已实现 module、seam 与 evidence contract
 ├── agent/
 │   ├── DOCUMENTATION.md          # 文档维护、拆分和跨 Agent 规则
 │   └── PROJECT_STATE.md          # 短期项目状态快照
@@ -86,6 +92,8 @@ docs/
 │   ├── 0002-react-embedded-browser-ui.md
 │   ├── README.md                 # ADR 索引与使用规则
 │   └── TEMPLATE.md               # ADR 模板
+├── development/
+│   └── SETUP.md                  # 开发环境与稳定验证命令
 └── product/
     ├── GLOSSARY.md               # 领域语言
     └── PRD.md                    # 完整产品规范
