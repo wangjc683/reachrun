@@ -41,7 +41,7 @@ ReachRun 处于 **Phase 0 in progress / resolver inventory and explicit DNS obse
 - 可运行二进制或 GitHub Release；
 - 经目标 macOS、Windows、Linux 设备实测过的网络能力结论。
 
-前两条探测切片已进入正式开发。当前代码和本地测试证明 envelope、System Resolution、Resolver Inventory 与 DNS Observation adapter contract；GitHub-hosted runner 状态和真实设备网络行为仍必须现场核验，不能由本快照推断。
+前两条探测切片已完成实现。当前代码和本地测试证明 envelope、System Resolution、Resolver Inventory 与 DNS Observation adapter contract；GitHub-hosted runner 状态和真实设备网络行为仍必须现场核验，不能由本快照推断。
 
 ## Next intended milestone
 
