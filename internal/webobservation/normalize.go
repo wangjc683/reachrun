@@ -1,13 +1,11 @@
 package webobservation
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/wangjc683/reachrun/internal/nettarget"
 )
@@ -26,12 +24,16 @@ type configuredTarget struct {
 	port     uint16
 	network  string
 	endpoint string
+	path     string
+	rawPath  string
+	rawQuery string
 }
 
 func normalizeRequest(request Request) (Input, configuredTarget, error) {
 	scheme, port, schemeErr := normalizeScheme(request.Scheme)
 	hostname, hostnameErr := normalizeHostname(request.Hostname)
 	ipText, ip, family, ipErr := normalizePublicIP(request.DialIP)
+	requestTarget, targetErr := nettarget.NormalizeWebRequestTarget(request.Path, request.RawQuery)
 
 	input := Input{
 		Scheme:   scheme,
@@ -40,7 +42,8 @@ func normalizeRequest(request Request) (Input, configuredTarget, error) {
 		Family:   family,
 		Port:     port,
 		Method:   httpMethod,
-		Path:     httpPath,
+		Path:     requestTarget.EscapedPath,
+		RawQuery: requestTarget.RawQuery,
 	}
 
 	if schemeErr != nil {
@@ -51,6 +54,9 @@ func normalizeRequest(request Request) (Input, configuredTarget, error) {
 	}
 	if ipErr != nil {
 		return input, configuredTarget{}, ipErr
+	}
+	if targetErr != nil {
+		return input, configuredTarget{}, targetErr
 	}
 
 	network := "tcp6"
@@ -64,6 +70,9 @@ func normalizeRequest(request Request) (Input, configuredTarget, error) {
 		port:     port,
 		network:  network,
 		endpoint: netip.AddrPortFrom(ip, port).String(),
+		path:     requestTarget.Path,
+		rawPath:  requestTarget.RawPath,
+		rawQuery: requestTarget.RawQuery,
 	}
 	return input, target, nil
 }
@@ -81,40 +90,7 @@ func normalizeScheme(value Scheme) (Scheme, uint16, error) {
 }
 
 func normalizeHostname(value string) (string, error) {
-	hostname := strings.ToLower(strings.TrimSpace(value))
-	hostname = strings.TrimSuffix(hostname, ".")
-	if hostname == "" {
-		return hostname, errors.New("hostname must not be empty")
-	}
-	if len(hostname) > 253 {
-		return hostname, errors.New("hostname exceeds 253 bytes")
-	}
-	if !strings.Contains(hostname, ".") {
-		return hostname, errors.New("hostname must not be a single-label local name")
-	}
-	if _, err := netip.ParseAddr(hostname); err == nil {
-		return hostname, errors.New("IP literals are not Web observation hostnames")
-	}
-	if strings.ContainsAny(hostname, "/\\:@?#[]*") ||
-		strings.IndexFunc(hostname, unicode.IsSpace) >= 0 {
-		return hostname, errors.New("hostname must not include a scheme, port, path, or whitespace")
-	}
-
-	for _, label := range strings.Split(hostname, ".") {
-		if len(label) == 0 || len(label) > 63 {
-			return hostname, errors.New("hostname labels must contain 1 to 63 bytes")
-		}
-		if label[0] == '-' || label[len(label)-1] == '-' {
-			return hostname, errors.New("hostname labels must not begin or end with a hyphen")
-		}
-		for _, r := range label {
-			if r > unicode.MaxASCII ||
-				!((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
-				return hostname, errors.New("hostname must be normalized ASCII letters, digits, dots, and hyphens")
-			}
-		}
-	}
-	return hostname, nil
+	return nettarget.NormalizeWebHostname(value)
 }
 
 func normalizePublicIP(value string) (string, netip.Addr, Family, error) {

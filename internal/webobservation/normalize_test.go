@@ -1,6 +1,11 @@
 package webobservation
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/wangjc683/reachrun/internal/nettarget"
+)
 
 func TestNormalizeRequestDerivesFixedProtocolFields(t *testing.T) {
 	t.Parallel()
@@ -37,6 +42,8 @@ func TestNormalizeRequestDerivesFixedProtocolFields(t *testing.T) {
 				Scheme:   SchemeHTTP,
 				Hostname: "edge.example",
 				DialIP:   testPublicIPv6,
+				Path:     "/redirected/%2Fpath",
+				RawQuery: "source=reachrun",
 			},
 			wantInput: Input{
 				Scheme:   SchemeHTTP,
@@ -45,7 +52,8 @@ func TestNormalizeRequestDerivesFixedProtocolFields(t *testing.T) {
 				Family:   FamilyIPv6,
 				Port:     80,
 				Method:   "GET",
-				Path:     "/",
+				Path:     "/redirected/%2Fpath",
+				RawQuery: "source=reachrun",
 			},
 			wantTarget: "[" + testPublicIPv6 + "]:80",
 			wantNet:    "tcp6",
@@ -143,6 +151,22 @@ func TestNormalizeRequestRejectsUnsafeOrMalformedInput(t *testing.T) {
 		"nat64 well known": {
 			Scheme: SchemeHTTPS, Hostname: "example.com", DialIP: "64:ff9b::808:808",
 		},
+		"absolute request target": {
+			Scheme: SchemeHTTPS, Hostname: "example.com", DialIP: "8.8.8.8",
+			Path: "https://other.example/path",
+		},
+		"query embedded in path": {
+			Scheme: SchemeHTTPS, Hostname: "example.com", DialIP: "8.8.8.8",
+			Path: "/path?query=must-be-separate",
+		},
+		"fragment in query": {
+			Scheme: SchemeHTTPS, Hostname: "example.com", DialIP: "8.8.8.8",
+			Path: "/path", RawQuery: "query=value#fragment",
+		},
+		"oversized request target": {
+			Scheme: SchemeHTTPS, Hostname: "example.com", DialIP: "8.8.8.8",
+			Path: "/" + strings.Repeat("x", nettarget.MaxWebRequestTargetBytes),
+		},
 	}
 
 	for name, request := range tests {
@@ -153,8 +177,8 @@ func TestNormalizeRequestRejectsUnsafeOrMalformedInput(t *testing.T) {
 			if err == nil {
 				t.Fatalf("normalizeRequest(%#v) error = nil; input = %#v", request, input)
 			}
-			if input.Method != httpMethod || input.Path != httpPath {
-				t.Fatalf("invalid input lost fixed method/path: %#v", input)
+			if input.Method != httpMethod || input.Path == "" {
+				t.Fatalf("invalid input lost derived method/path: %#v", input)
 			}
 		})
 	}

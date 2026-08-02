@@ -19,9 +19,13 @@ import (
 	"github.com/wangjc683/reachrun/internal/probe"
 	"github.com/wangjc683/reachrun/internal/sshobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation"
+	"github.com/wangjc683/reachrun/internal/webpath"
 )
 
-const phase0ProbeTimeout = 5 * time.Second
+const (
+	phase0ProbeTimeout   = 5 * time.Second
+	phase0WebPathTimeout = 15 * time.Second
+)
 
 const (
 	resolverCurrent        dnsobservation.ResolverID = "current"
@@ -33,14 +37,16 @@ const (
 
 type dnsObserverFactory func(dnsobservation.Config) (dnsobservation.Observer, error)
 type webObserverFactory func(webobservation.Config) (webobservation.Observer, error)
+type webPathObserverFactory func(webpath.Config) (webpath.Observer, error)
 type sshObserverFactory func(sshobservation.Config) (sshobservation.Observer, error)
 
 type dependencies struct {
-	systemResolver    systemresolver.Resolver
-	resolverInventory resolverinventory.Observer
-	newDNSObserver    dnsObserverFactory
-	newWebObserver    webObserverFactory
-	newSSHObserver    sshObserverFactory
+	systemResolver     systemresolver.Resolver
+	resolverInventory  resolverinventory.Observer
+	newDNSObserver     dnsObserverFactory
+	newWebObserver     webObserverFactory
+	newWebPathObserver webPathObserverFactory
+	newSSHObserver     sshObserverFactory
 }
 
 func main() {
@@ -56,11 +62,12 @@ func mainExitCode() int {
 
 func productionDependencies() dependencies {
 	return dependencies{
-		systemResolver:    systemresolver.New(),
-		resolverInventory: resolverinventory.New(),
-		newDNSObserver:    dnsobservation.New,
-		newWebObserver:    webobservation.New,
-		newSSHObserver:    sshobservation.New,
+		systemResolver:     systemresolver.New(),
+		resolverInventory:  resolverinventory.New(),
+		newDNSObserver:     dnsobservation.New,
+		newWebObserver:     webobservation.New,
+		newWebPathObserver: webpath.New,
+		newSSHObserver:     sshobservation.New,
 	}
 }
 
@@ -103,6 +110,18 @@ func run(
 			return 2
 		}
 		return runWebObservation(ctx, request, stdout, stderr, deps.newWebObserver)
+	case "web-path":
+		if len(args) != 2 {
+			printUsage(stderr)
+			return 2
+		}
+		return runWebPath(
+			ctx,
+			webpath.Request{Hostname: args[1]},
+			stdout,
+			stderr,
+			deps.newWebPathObserver,
+		)
 	case "ssh-observe":
 		request, ok := parseSSHObservationArgs(args)
 		if !ok {
@@ -114,6 +133,36 @@ func run(
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runWebPath(
+	ctx context.Context,
+	request webpath.Request,
+	stdout io.Writer,
+	stderr io.Writer,
+	newObserver webPathObserverFactory,
+) int {
+	pathContext, cancel := context.WithTimeout(ctx, phase0WebPathTimeout)
+	defer cancel()
+
+	observer, err := newObserver(webpath.Config{Timeout: phase0WebPathTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create Web-path observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(pathContext, request)
+	if err := webpath.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid Web-path result: %v\n", err)
+		return 1
+	}
+	outcome := probe.OutcomeFailed
+	switch result.Status {
+	case webpath.StatusCompleted:
+		outcome = probe.OutcomeSucceeded
+	case webpath.StatusCancelled:
+		outcome = probe.OutcomeCancelled
+	}
+	return emitResult(stdout, stderr, result, outcome)
 }
 
 func runSSHObservation(
@@ -472,7 +521,8 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  reachrun resolve <hostname>")
 	fmt.Fprintln(output, "  reachrun resolver-inventory")
 	fmt.Fprintln(output, "  reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME> <hostname>")
+	fmt.Fprintln(output, "  reachrun web-path <hostname>")
 	fmt.Fprintln(output, "  reachrun web-observe <http|https> <hostname> <public-ip>")
 	fmt.Fprintln(output, "  reachrun ssh-observe <public-ip> [port]")
-	fmt.Fprintln(output, "Phase 0 diagnostic only: each valid probe prints one terminal evidence envelope as JSON.")
+	fmt.Fprintln(output, "Phase 0 diagnostic only: each valid command prints one terminal JSON evidence document.")
 }

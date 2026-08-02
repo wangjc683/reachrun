@@ -68,6 +68,8 @@ func validateInputContract(input Input, failure *probe.Failure) error {
 		Scheme:   input.Scheme,
 		Hostname: input.Hostname,
 		DialIP:   input.DialIP,
+		Path:     input.Path,
+		RawQuery: input.RawQuery,
 	})
 	if normalized != input {
 		return fmt.Errorf("input must use its normalized and derived representation")

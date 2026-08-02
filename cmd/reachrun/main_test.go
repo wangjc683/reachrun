@@ -23,6 +23,8 @@ import (
 	"github.com/wangjc683/reachrun/internal/sshobservation/sshobservationtest"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation/webobservationtest"
+	"github.com/wangjc683/reachrun/internal/webpath"
+	"github.com/wangjc683/reachrun/internal/webpath/webpathtest"
 )
 
 func TestRunResolvePrintsOneEnvelopeAndReturnsOutcomeExitCode(t *testing.T) {
@@ -829,6 +831,103 @@ func TestRunReportsWebObserverFactoryErrorWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRunWebPathPrintsOneReportAndMapsTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		hostname string
+		result   webpath.Result
+		code     int
+	}{
+		{
+			name:     "completed",
+			hostname: "example.com",
+			result:   cliWebPathCompletedResult(),
+			code:     0,
+		},
+		{
+			name:     "stopped invalid input",
+			hostname: "bad/name",
+			result: cliWebPathEmptyResult(
+				"bad/name",
+				webpath.StatusStopped,
+				webpath.StopInvalidInput,
+			),
+			code: 1,
+		},
+		{
+			name:     "cancelled",
+			hostname: "example.com",
+			result: cliWebPathEmptyResult(
+				"example.com",
+				webpath.StatusCancelled,
+				webpath.StopCancelled,
+			),
+			code: 130,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			pathObserver := webpathtest.New(test.result)
+			factory := &scriptedWebPathFactory{observer: pathObserver}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				[]string{"web-path", test.hostname},
+				&stdout,
+				&stderr,
+				dependencies{newWebPathObserver: factory.New},
+			)
+			if code != test.code {
+				t.Fatalf("run() = %d, want %d; stderr = %q", code, test.code, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			decoded := decodeOneJSON[webpath.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+			wantCalls := []webpathtest.Call{{Request: webpath.Request{Hostname: test.hostname}}}
+			if calls := pathObserver.Calls(); !reflect.DeepEqual(calls, wantCalls) {
+				t.Fatalf("Web-path calls = %#v, want %#v", calls, wantCalls)
+			}
+			if config := factory.singleConfig(t); config.Timeout != phase0WebPathTimeout {
+				t.Fatalf("Web-path timeout = %s, want %s", config.Timeout, phase0WebPathTimeout)
+			}
+		})
+	}
+}
+
+func TestRunReportsWebPathFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedWebPathFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"web-path", "example.com"},
+		&stdout,
+		&stderr,
+		dependencies{newWebPathObserver: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run/stdout = %d/%q, want 1/empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create Web-path observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0WebPathTimeout {
+		t.Fatalf("Web-path timeout = %s, want %s", config.Timeout, phase0WebPathTimeout)
+	}
+}
+
 func TestRunSSHObservationMapsDefaultAndCustomPorts(t *testing.T) {
 	t.Parallel()
 
@@ -983,6 +1082,8 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 		"Web missing argument":         {"web-observe", "https", "example.com"},
 		"Web extra argument":           {"web-observe", "https", "example.com", "93.184.216.34", "extra"},
 		"unknown Web scheme":           {"web-observe", "HTTPS", "example.com", "93.184.216.34"},
+		"Web path missing hostname":    {"web-path"},
+		"Web path extra argument":      {"web-path", "example.com", "extra"},
 		"SSH missing IP":               {"ssh-observe"},
 		"SSH extra argument":           {"ssh-observe", "93.184.216.34", "22", "extra"},
 		"SSH nonnumeric port":          {"ssh-observe", "93.184.216.34", "ssh"},
@@ -997,6 +1098,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			inventory := resolverinventorytest.New()
 			factory := &scriptedDNSFactory{observer: dnsobservationtest.New()}
 			webFactory := &scriptedWebFactory{observer: webobservationtest.New()}
+			webPathFactory := &scriptedWebPathFactory{observer: webpathtest.New()}
 			sshFactory := &scriptedSSHFactory{observer: sshobservationtest.New()}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
@@ -1007,11 +1109,12 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				&stdout,
 				&stderr,
 				dependencies{
-					systemResolver:    resolver,
-					resolverInventory: inventory,
-					newDNSObserver:    factory.New,
-					newWebObserver:    webFactory.New,
-					newSSHObserver:    sshFactory.New,
+					systemResolver:     resolver,
+					resolverInventory:  inventory,
+					newDNSObserver:     factory.New,
+					newWebObserver:     webFactory.New,
+					newWebPathObserver: webPathFactory.New,
+					newSSHObserver:     sshFactory.New,
 				},
 			)
 			if code != 2 {
@@ -1024,17 +1127,20 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				!strings.Contains(stderr.String(), "reachrun resolver-inventory") ||
 				!strings.Contains(stderr.String(), "reachrun dns-observe") ||
 				!strings.Contains(stderr.String(), "reachrun web-observe") ||
+				!strings.Contains(stderr.String(), "reachrun web-path") ||
 				!strings.Contains(stderr.String(), "reachrun ssh-observe") {
 				t.Fatalf("stderr = %q, want Phase 0 usage", stderr.String())
 			}
 			if len(resolver.Calls()) != 0 || len(inventory.Calls()) != 0 ||
-				len(factory.calls) != 0 || len(webFactory.calls) != 0 || len(sshFactory.calls) != 0 {
+				len(factory.calls) != 0 || len(webFactory.calls) != 0 ||
+				len(webPathFactory.calls) != 0 || len(sshFactory.calls) != 0 {
 				t.Fatalf(
-					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, Web factory %#v, SSH factory %#v; want none",
+					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, Web factory %#v, Web-path factory %#v, SSH factory %#v; want none",
 					resolver.Calls(),
 					inventory.Calls(),
 					factory.calls,
 					webFactory.calls,
+					webPathFactory.calls,
 					sshFactory.calls,
 				)
 			}
@@ -1079,6 +1185,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 				}).New,
 			},
 			wantError: "invalid Web observation result",
+		},
+		"Web path": {
+			args: []string{"web-path", "example.com"},
+			deps: dependencies{
+				newWebPathObserver: (&scriptedWebPathFactory{
+					observer: webpathtest.New(webpath.Result{}),
+				}).New,
+			},
+			wantError: "invalid Web-path result",
 		},
 		"SSH observation": {
 			args: []string{"ssh-observe", "93.184.216.34"},
@@ -1228,6 +1343,54 @@ func TestRunWebObservationPropagatesParentCancellationAndAddsOuterDeadline(t *te
 	}
 }
 
+func TestRunWebPathPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
+	t.Parallel()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := cliWebPathEmptyResult(
+		"example.com",
+		webpath.StatusCancelled,
+		webpath.StopCancelled,
+	)
+	observer := webPathObserverFunc(func(
+		ctx context.Context,
+		request webpath.Request,
+	) webpath.Result {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("Web-path context error = %v, want context.Canceled", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("Web-path context has no outer deadline")
+		}
+		if request != (webpath.Request{Hostname: "example.com"}) {
+			t.Fatalf("Web-path request = %#v", request)
+		}
+		return result
+	})
+	factory := &scriptedWebPathFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		parent,
+		[]string{"web-path", "example.com"},
+		&stdout,
+		&stderr,
+		dependencies{newWebPathObserver: factory.New},
+	)
+	if code != 130 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 130/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[webpath.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0WebPathTimeout {
+		t.Fatalf("Web-path timeout = %s, want %s", config.Timeout, phase0WebPathTimeout)
+	}
+}
+
 type scriptedDNSFactory struct {
 	observer dnsobservation.Observer
 	err      error
@@ -1252,6 +1415,12 @@ type scriptedWebFactory struct {
 	observer webobservation.Observer
 	err      error
 	calls    []webobservation.Config
+}
+
+type scriptedWebPathFactory struct {
+	observer webpath.Observer
+	err      error
+	calls    []webpath.Config
 }
 
 type scriptedSSHFactory struct {
@@ -1286,6 +1455,19 @@ func (f *scriptedWebFactory) singleConfig(t *testing.T) webobservation.Config {
 	return f.calls[0]
 }
 
+func (f *scriptedWebPathFactory) New(config webpath.Config) (webpath.Observer, error) {
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedWebPathFactory) singleConfig(t *testing.T) webpath.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("Web-path factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
+}
+
 type resolverFunc func(context.Context, string) systemresolver.Result
 
 func (f resolverFunc) Resolve(ctx context.Context, hostname string) systemresolver.Result {
@@ -1307,6 +1489,15 @@ func (f webObserverFunc) Observe(
 	ctx context.Context,
 	request webobservation.Request,
 ) webobservation.Result {
+	return f(ctx, request)
+}
+
+type webPathObserverFunc func(context.Context, webpath.Request) webpath.Result
+
+func (f webPathObserverFunc) Observe(
+	ctx context.Context,
+	request webpath.Request,
+) webpath.Result {
 	return f(ctx, request)
 }
 
@@ -1611,6 +1802,72 @@ func cliWebResult(
 		Outcome:       outcome,
 		Evidence:      evidence,
 		Failure:       failure,
+	}
+}
+
+func cliWebPathCompletedResult() webpath.Result {
+	address := "8.8.8.8"
+	resolutionEvidence := systemresolver.Evidence{
+		Addresses: []systemresolver.Address{{IP: address, Family: systemresolver.FamilyIPv4}},
+	}
+	resolution := systemresolver.Result{
+		SchemaVersion: probe.SchemaVersion,
+		Probe:         probe.KindSystemResolution,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    1,
+		Platform:      cliPlatform(),
+		Source:        cliSource(),
+		Input:         systemresolver.Input{Hostname: "example.com"},
+		Outcome:       probe.OutcomeSucceeded,
+		Evidence:      &resolutionEvidence,
+	}
+	webInput := cliWebInput(webobservation.SchemeHTTPS, "example.com", address)
+	webEvidence := webobservation.Evidence{
+		RemoteEndpoint: "8.8.8.8:443",
+		TCPConnectMS:   1,
+		TLS: &webobservation.TLSObservation{
+			ServerName: "example.com", Version: "TLS1.3", CipherSuite: "TLS_AES_128_GCM_SHA256",
+			HandshakeMS: 1, VerifiedChains: 1,
+			Leaf: webobservation.LeafCertificate{
+				SHA256:    strings.Repeat("a", 64),
+				NotBefore: cliObservedAt().Add(-time.Hour),
+				NotAfter:  cliObservedAt().Add(time.Hour),
+			},
+		},
+		HTTP: webobservation.HTTPObservation{
+			Protocol: "HTTP/1.1", StatusCode: 204, TTFBMS: 1,
+		},
+	}
+	webResult := cliWebResult(probe.OutcomeSucceeded, webInput, &webEvidence, nil)
+	result := cliWebPathEmptyResult(
+		"example.com",
+		webpath.StatusCompleted,
+		webpath.StopFinalResponse,
+	)
+	result.Hops = []webpath.Hop{{
+		URL: "https://example.com/", Resolution: resolution,
+		Attempts: []webobservation.Result{webResult},
+	}}
+	return result
+}
+
+func cliWebPathEmptyResult(
+	hostname string,
+	status webpath.Status,
+	reason webpath.StopReason,
+) webpath.Result {
+	normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
+	return webpath.Result{
+		SchemaVersion: webpath.SchemaVersion,
+		Operation:     webpath.Operation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    1,
+		Platform:      cliPlatform(),
+		Input: webpath.Input{
+			Hostname: normalized, InitialURL: "https://" + normalized + "/", Method: "GET",
+			RedirectLimit: 3, CandidateLimitPerFamily: 2,
+		},
+		Status: status, StopReason: reason, Hops: []webpath.Hop{},
 	}
 }
 

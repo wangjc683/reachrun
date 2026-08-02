@@ -80,6 +80,11 @@ type Request struct {
 	Scheme   Scheme
 	Hostname string
 	DialIP   string
+	// Path and RawQuery are derived from a server redirect by the Web-path
+	// orchestrator. Empty Path selects root. The Phase 0 CLI does not expose
+	// either field as user-controlled input.
+	Path     string
+	RawQuery string
 }
 
 // Input is the normalized, fully derived request captured in every envelope.
@@ -92,6 +97,7 @@ type Input struct {
 	Port     uint16 `json:"port"`
 	Method   string `json:"method"`
 	Path     string `json:"path"`
+	RawQuery string `json:"raw_query,omitempty"`
 }
 
 // LeafCertificate records bounded identity facts about the verified leaf

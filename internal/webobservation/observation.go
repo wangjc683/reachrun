@@ -111,9 +111,11 @@ func (o *observer) Observe(ctx context.Context, request Request) Result {
 	defer cancel()
 
 	requestURL := &url.URL{
-		Scheme: string(input.Scheme),
-		Host:   input.Hostname,
-		Path:   input.Path,
+		Scheme:   string(input.Scheme),
+		Host:     input.Hostname,
+		Path:     target.path,
+		RawPath:  target.rawPath,
+		RawQuery: target.rawQuery,
 	}
 	httpRequest, err := http.NewRequestWithContext(
 		attemptCtx,

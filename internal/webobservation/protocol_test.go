@@ -156,6 +156,40 @@ func TestObserveRedirectIsEvidenceWithoutASecondDial(t *testing.T) {
 	assertSingleDial(t, dialer, "tcp4", testPublicIPv4+":80")
 }
 
+func TestObserveSendsDerivedRedirectPathAndQuery(t *testing.T) {
+	t.Parallel()
+
+	requestTargets := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requestTargets <- request.URL.RequestURI()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	dialer := newMappedDialer(server.Listener.Addr().String())
+	observer := mustTestObserver(t, Config{}, dependencies{
+		now:         time.Now,
+		dialContext: dialer.DialContext,
+	})
+	result := observer.Observe(context.Background(), Request{
+		Scheme:   SchemeHTTP,
+		Hostname: "redirect.example",
+		DialIP:   testPublicIPv4,
+		Path:     "/redirected/%2Fpath",
+		RawQuery: "source=reachrun",
+	})
+	if err := Validate(result); err != nil {
+		t.Fatalf("Validate() error = %v; result = %#v", err, result)
+	}
+	assertChannelValue(
+		t,
+		requestTargets,
+		"/redirected/%2Fpath?source=reachrun",
+		"HTTP request target",
+	)
+	assertSingleDial(t, dialer, "tcp4", testPublicIPv4+":80")
+}
+
 func TestObserveOmitsOversizedOptionalHeadersWithoutLosingHTTPStatus(t *testing.T) {
 	t.Parallel()
 
