@@ -6,13 +6,13 @@
 >
 > Update when：项目阶段、下一里程碑或阻塞条件发生变化
 
-> Last reviewed：2026-08-01
+> Last reviewed：2026-08-02
 >
 > Snapshot basis：本文件所在提交的仓库状态。任何后续实现、CI 或里程碑变化都必须现场核验并更新本快照。
 
 ## Current phase
 
-ReachRun 处于 **Phase 0 in progress / resolver inventory and explicit DNS observation slice implemented** 阶段。
+ReachRun 处于 **Phase 0 in progress / explicit Web observation slice implemented** 阶段。
 
 已经具备：
 
@@ -28,20 +28,22 @@ ReachRun 处于 **Phase 0 in progress / resolver inventory and explicit DNS obse
 - macOS `scutil --dns`、Windows `GetAdaptersAddresses` 与 Linux `/etc/resolv.conf` Resolver Inventory adapter；
 - 显式 UDP、TCP 与 RFC 8484 DoH DNS Observation，当前支持 A、AAAA 和 CNAME；
 - RCODE、flags、CNAME 链、SOA、Authority NS、实际 endpoint 与传输元数据等 typed evidence；
-- `reachrun resolve`、`reachrun resolver-inventory` 与 `reachrun dns-observe` 三条命令；
-- macOS、Windows 与 Linux 原生 resolver contract test，以及三平台 GitHub Actions workflow；
+- 对一个明确候选公网 IP 执行第一跳 HTTP/HTTPS 的 Web Observation，hostname 仍用于 Host、TLS SNI 与证书验证；
+- `reachrun resolve`、`reachrun resolver-inventory`、`reachrun dns-observe` 与 `reachrun web-observe` 四条命令；
+- macOS、Windows 与 Linux 原生 resolver contract test、受控 Web contract test，以及三平台 GitHub Actions workflow；
 - 当前实现架构和可复现开发命令。
 
 尚未具备：
 
 - HTTPS/SVCB DNS Observation 与 AliasMode 重启规则；
-- Web、TLS/SNI、HTTP 与 SSH identification probe；
+- 默认系统公开网站路径、有限重定向、候选成对复核、无主要域名时的有限 TLS 结论与 SSH identification probe；
+- “本机没有可用 IPv6 路由”到中性检测条件结果的 assessment；
 - 批次编排、assessment、持久化、本地 HTTP 和前端工程；
 - 面向用户的“启动后打开浏览器”应用流程；
 - 可运行二进制或 GitHub Release；
 - 经目标 macOS、Windows、Linux 设备实测过的网络能力结论。
 
-前两条探测切片已完成实现。当前代码和本地测试证明 envelope、System Resolution、Resolver Inventory 与 DNS Observation adapter contract；GitHub-hosted runner 状态和真实设备网络行为仍必须现场核验，不能由本快照推断。
+前三条探测切片已完成实现。当前代码和本地测试证明 envelope、System Resolution、Resolver Inventory、DNS Observation 与 Web Observation adapter contract；GitHub-hosted runner 状态和真实设备网络行为仍必须现场核验，不能由本快照推断。
 
 ## Next intended milestone
 
@@ -49,7 +51,7 @@ ReachRun 处于 **Phase 0 in progress / resolver inventory and explicit DNS obse
 
 Spike 应先建立版本化 JSON probe evidence envelope 和最小 CLI，再覆盖三平台 System Resolution adapter、resolver inventory、显式 DNS UDP/TCP/DoH、IPv4/IPv6、指定 IP + 正确 Host/SNI、SSH identification、HTTP/HTTPS、超时、取消、占位页浏览器 URL 回退与平台策略表现。该 envelope 只固定跨平台探测来源、能力、结果与错误类别；Phase 1 再扩展为完整资产、结果和变化模型。通过标准和场景矩阵以 PRD 第 19 节为准，不在本文件重复维护。
 
-前两份实现切片已完成。下一份切片建立指定 IP + 正确 Host/SNI 的 Web/TLS/HTTP probe，并把 IPv4/IPv6 连接证据分开，仍不进入 React UI。这会先验证网站体检最核心的“DNS 给出什么”与“对哪个 IP 建连”能否彻底分开，避免把 DNS、TLS 和 HTTP 失败混成一个结果。HTTPS/SVCB 与 AliasMode 在完整域名深度诊断编排前补齐；随后再按 PRD §19 覆盖 SSH、取消和平台策略场景。
+前三份实现切片已完成。下一份切片建立 SSH TCP 建连与受限 identification 交换 probe，区分“SSH 服务响应”、“端口可达但未确认 SSH”与 TCP 分层失败，不继续密钥交换或认证，仍不进入 React UI。HTTPS/SVCB 与 AliasMode 仍未实现，必须在完整域名深度诊断编排前补齐；随后继续按 PRD §19 覆盖默认系统网站路径、候选成对复核、有限重定向、取消和平台策略场景。
 
 ## Open decisions
 

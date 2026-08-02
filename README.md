@@ -24,7 +24,7 @@ ReachRun does not run continuously, send alerts, or claim that a failure was def
 
 ## Development preview
 
-The current Phase 0 CLI can inspect three deliberately separate kinds of name-resolution evidence:
+The current Phase 0 CLI can inspect three deliberately separate kinds of name-resolution evidence and make one first-hop Web observation against an explicit public IP:
 
 ```bash
 git clone https://github.com/wangjc683/reachrun.git
@@ -32,9 +32,10 @@ cd reachrun
 go run ./cmd/reachrun resolve localhost
 go run ./cmd/reachrun resolver-inventory
 go run ./cmd/reachrun dns-observe udp current A example.com
+go run ./cmd/reachrun web-observe https one.one.one.one 1.1.1.1
 ```
 
-These commands distinguish operating-system resolution, configured resolver candidates, and a controlled query to one explicit resolver. Each command prints one versioned JSON evidence envelope. They require Go 1.26 or newer and are developer diagnostics, not the final one-click browser experience. See [Development Setup](docs/development/SETUP.md) for the full command set, tests, and platform limitations.
+The name-resolution commands distinguish operating-system resolution, configured resolver candidates, and a controlled query to one explicit resolver. `web-observe` bypasses name resolution for the connection while preserving the hostname for HTTP Host, TLS SNI, and certificate verification. Each command prints one versioned JSON evidence envelope. They require Go 1.26 or newer and are developer diagnostics, not the final one-click browser experience. See [Development Setup](docs/development/SETUP.md) for the full command set, tests, and platform limitations.
 
 ## Privacy
 

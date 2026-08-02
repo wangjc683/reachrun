@@ -19,6 +19,8 @@ import (
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver"
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver/systemresolvertest"
 	"github.com/wangjc683/reachrun/internal/probe"
+	"github.com/wangjc683/reachrun/internal/webobservation"
+	"github.com/wangjc683/reachrun/internal/webobservation/webobservationtest"
 )
 
 func TestRunResolvePrintsOneEnvelopeAndReturnsOutcomeExitCode(t *testing.T) {
@@ -670,6 +672,161 @@ func TestRunDNSObservationCurrentCancellationReturnsOneCancelledDNSEnvelope(t *t
 	}
 }
 
+func TestRunWebObservationMapsRequestAndReturnsOutcomeExitCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		scheme   webobservation.Scheme
+		hostname string
+		dialIP   string
+		result   webobservation.Result
+		code     int
+	}{
+		{
+			name:     "HTTP IPv4 success",
+			scheme:   webobservation.SchemeHTTP,
+			hostname: "example.com",
+			dialIP:   "93.184.216.34",
+			result:   cliWebSuccessResult("example.com", "93.184.216.34"),
+			code:     0,
+		},
+		{
+			name:     "HTTPS IPv6 failure",
+			scheme:   webobservation.SchemeHTTPS,
+			hostname: "example.com",
+			dialIP:   "2606:4700:4700::1111",
+			result: cliWebFailureResult(
+				webobservation.SchemeHTTPS,
+				"example.com",
+				"2606:4700:4700::1111",
+				probe.OutcomeFailed,
+				webobservation.FailureTLSHandshake,
+			),
+			code: 1,
+		},
+		{
+			name:     "HTTPS cancellation",
+			scheme:   webobservation.SchemeHTTPS,
+			hostname: "example.com",
+			dialIP:   "2606:4700:4700::1111",
+			result: cliWebFailureResult(
+				webobservation.SchemeHTTPS,
+				"example.com",
+				"2606:4700:4700::1111",
+				probe.OutcomeCancelled,
+				probe.FailureCancelled,
+			),
+			code: 130,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			observer := webobservationtest.New(test.result)
+			factory := &scriptedWebFactory{observer: observer}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				[]string{"web-observe", string(test.scheme), test.hostname, test.dialIP},
+				&stdout,
+				&stderr,
+				dependencies{newWebObserver: factory.New},
+			)
+			if code != test.code {
+				t.Fatalf("run() = %d, want %d; stderr = %q", code, test.code, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			decoded := decodeOneJSON[webobservation.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+
+			wantRequest := webobservation.Request{
+				Scheme:   test.scheme,
+				Hostname: test.hostname,
+				DialIP:   test.dialIP,
+			}
+			wantCalls := []webobservationtest.Call{{Request: wantRequest}}
+			if got := observer.Calls(); !reflect.DeepEqual(got, wantCalls) {
+				t.Fatalf("Web calls = %#v, want %#v", got, wantCalls)
+			}
+			if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+				t.Fatalf("Web timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+			}
+		})
+	}
+}
+
+func TestRunWebObservationPassesInvalidHostnameAndIPToObserver(t *testing.T) {
+	t.Parallel()
+
+	result := cliWebInvalidInputResult("bad/name", "not-an-ip")
+	observer := webobservationtest.New(result)
+	factory := &scriptedWebFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		context.Background(),
+		[]string{"web-observe", "http", "bad/name", "not-an-ip"},
+		&stdout,
+		&stderr,
+		dependencies{newWebObserver: factory.New},
+	)
+	if code != 1 {
+		t.Fatalf("run() = %d, want 1; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	decoded := decodeOneJSON[webobservation.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	wantRequest := webobservation.Request{
+		Scheme:   webobservation.SchemeHTTP,
+		Hostname: "bad/name",
+		DialIP:   "not-an-ip",
+	}
+	if got := observer.Calls(); !reflect.DeepEqual(got, []webobservationtest.Call{{Request: wantRequest}}) {
+		t.Fatalf("Web calls = %#v, want request %#v", got, wantRequest)
+	}
+}
+
+func TestRunReportsWebObserverFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedWebFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"web-observe", "https", "example.com", "93.184.216.34"},
+		&stdout,
+		&stderr,
+		dependencies{newWebObserver: factory.New},
+	)
+
+	if code != 1 {
+		t.Fatalf("run() = %d, want 1", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create Web observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+		t.Fatalf("Web timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+	}
+}
+
 func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -685,6 +842,9 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 		"unknown provider":             {"dns-observe", "udp", "quad9", "A", "example.com"},
 		"lowercase query type":         {"dns-observe", "udp", "cloudflare", "a", "example.com"},
 		"current does not support DoH": {"dns-observe", "doh", "current", "A", "example.com"},
+		"Web missing argument":         {"web-observe", "https", "example.com"},
+		"Web extra argument":           {"web-observe", "https", "example.com", "93.184.216.34", "extra"},
+		"unknown Web scheme":           {"web-observe", "HTTPS", "example.com", "93.184.216.34"},
 	}
 
 	for name, args := range tests {
@@ -693,6 +853,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			resolver := systemresolvertest.New()
 			inventory := resolverinventorytest.New()
 			factory := &scriptedDNSFactory{observer: dnsobservationtest.New()}
+			webFactory := &scriptedWebFactory{observer: webobservationtest.New()}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 
@@ -705,6 +866,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 					systemResolver:    resolver,
 					resolverInventory: inventory,
 					newDNSObserver:    factory.New,
+					newWebObserver:    webFactory.New,
 				},
 			)
 			if code != 2 {
@@ -715,15 +877,18 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			}
 			if !strings.Contains(stderr.String(), "Phase 0 diagnostic") ||
 				!strings.Contains(stderr.String(), "reachrun resolver-inventory") ||
-				!strings.Contains(stderr.String(), "reachrun dns-observe") {
+				!strings.Contains(stderr.String(), "reachrun dns-observe") ||
+				!strings.Contains(stderr.String(), "reachrun web-observe") {
 				t.Fatalf("stderr = %q, want Phase 0 usage", stderr.String())
 			}
-			if len(resolver.Calls()) != 0 || len(inventory.Calls()) != 0 || len(factory.calls) != 0 {
+			if len(resolver.Calls()) != 0 || len(inventory.Calls()) != 0 ||
+				len(factory.calls) != 0 || len(webFactory.calls) != 0 {
 				t.Fatalf(
-					"dependency calls = resolver %#v, inventory %#v, factory %#v; want none",
+					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, Web factory %#v; want none",
 					resolver.Calls(),
 					inventory.Calls(),
 					factory.calls,
+					webFactory.calls,
 				)
 			}
 		})
@@ -758,6 +923,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 				}).New,
 			},
 			wantError: "invalid DNS observation result",
+		},
+		"Web observation": {
+			args: []string{"web-observe", "http", "example.com", "93.184.216.34"},
+			deps: dependencies{
+				newWebObserver: (&scriptedWebFactory{
+					observer: webobservationtest.New(webobservation.Result{}),
+				}).New,
+			},
+			wantError: "invalid Web observation result",
 		},
 	}
 
@@ -840,6 +1014,64 @@ func TestRunPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
 	decodeOneJSON[systemresolver.Result](t, stdout.Bytes())
 }
 
+func TestRunWebObservationPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
+	t.Parallel()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := cliWebFailureResult(
+		webobservation.SchemeHTTPS,
+		"example.com",
+		"2606:4700:4700::1111",
+		probe.OutcomeCancelled,
+		probe.FailureCancelled,
+	)
+	observer := webObserverFunc(func(
+		ctx context.Context,
+		request webobservation.Request,
+	) webobservation.Result {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("Web context error = %v, want context.Canceled", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("Web probe context has no outer deadline")
+		}
+		wantRequest := webobservation.Request{
+			Scheme:   webobservation.SchemeHTTPS,
+			Hostname: "example.com",
+			DialIP:   "2606:4700:4700::1111",
+		}
+		if !reflect.DeepEqual(request, wantRequest) {
+			t.Fatalf("Web request = %#v, want %#v", request, wantRequest)
+		}
+		return result
+	})
+	factory := &scriptedWebFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		parent,
+		[]string{"web-observe", "https", "example.com", "2606:4700:4700::1111"},
+		&stdout,
+		&stderr,
+		dependencies{newWebObserver: factory.New},
+	)
+	if code != 130 {
+		t.Fatalf("run() = %d, want 130; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	decoded := decodeOneJSON[webobservation.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+		t.Fatalf("Web timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+	}
+}
+
 type scriptedDNSFactory struct {
 	observer dnsobservation.Observer
 	err      error
@@ -860,6 +1092,25 @@ func (f *scriptedDNSFactory) singleConfig(t *testing.T) dnsobservation.Config {
 	return f.calls[0]
 }
 
+type scriptedWebFactory struct {
+	observer webobservation.Observer
+	err      error
+	calls    []webobservation.Config
+}
+
+func (f *scriptedWebFactory) New(config webobservation.Config) (webobservation.Observer, error) {
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedWebFactory) singleConfig(t *testing.T) webobservation.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("Web factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
+}
+
 type resolverFunc func(context.Context, string) systemresolver.Result
 
 func (f resolverFunc) Resolve(ctx context.Context, hostname string) systemresolver.Result {
@@ -872,6 +1123,15 @@ func (f dnsObserverFunc) Observe(
 	ctx context.Context,
 	request dnsobservation.Request,
 ) dnsobservation.Result {
+	return f(ctx, request)
+}
+
+type webObserverFunc func(context.Context, webobservation.Request) webobservation.Result
+
+func (f webObserverFunc) Observe(
+	ctx context.Context,
+	request webobservation.Request,
+) webobservation.Result {
 	return f(ctx, request)
 }
 
@@ -1075,6 +1335,92 @@ func cliDNSResult(
 		Probe:         dnsobservation.ProbeKind,
 		ObservedAt:    cliObservedAt(),
 		DurationMS:    1,
+		Platform:      cliPlatform(),
+		Source:        cliSource(),
+		Input:         input,
+		Outcome:       outcome,
+		Evidence:      evidence,
+		Failure:       failure,
+	}
+}
+
+func cliWebSuccessResult(hostname, dialIP string) webobservation.Result {
+	input := cliWebInput(webobservation.SchemeHTTP, hostname, dialIP)
+	evidence := webobservation.Evidence{
+		RemoteEndpoint: netip.AddrPortFrom(netip.MustParseAddr(dialIP), input.Port).String(),
+		TCPConnectMS:   1,
+		HTTP: webobservation.HTTPObservation{
+			Protocol:   "HTTP/1.1",
+			StatusCode: 204,
+			TTFBMS:     1,
+		},
+	}
+	return cliWebResult(probe.OutcomeSucceeded, input, &evidence, nil)
+}
+
+func cliWebFailureResult(
+	scheme webobservation.Scheme,
+	hostname string,
+	dialIP string,
+	outcome probe.Outcome,
+	code probe.FailureCode,
+) webobservation.Result {
+	return cliWebResult(
+		outcome,
+		cliWebInput(scheme, hostname, dialIP),
+		nil,
+		&probe.Failure{Code: code, Detail: "scripted failure"},
+	)
+}
+
+func cliWebInvalidInputResult(hostname, dialIP string) webobservation.Result {
+	return cliWebResult(
+		probe.OutcomeFailed,
+		cliWebInput(webobservation.SchemeHTTP, hostname, dialIP),
+		nil,
+		&probe.Failure{Code: probe.FailureInvalidInput, Detail: "scripted invalid input"},
+	)
+}
+
+func cliWebInput(
+	scheme webobservation.Scheme,
+	hostname string,
+	dialIP string,
+) webobservation.Input {
+	input := webobservation.Input{
+		Scheme:   scheme,
+		Hostname: hostname,
+		DialIP:   dialIP,
+		Method:   "GET",
+		Path:     "/",
+	}
+	switch scheme {
+	case webobservation.SchemeHTTP:
+		input.Port = 80
+	case webobservation.SchemeHTTPS:
+		input.Port = 443
+	}
+	if address, err := netip.ParseAddr(dialIP); err == nil {
+		if address.Unmap().Is4() {
+			input.Family = webobservation.FamilyIPv4
+		} else {
+			input.Family = webobservation.FamilyIPv6
+		}
+	}
+	return input
+}
+
+func cliWebResult(
+	outcome probe.Outcome,
+	input webobservation.Input,
+	evidence *webobservation.Evidence,
+	failure *probe.Failure,
+) webobservation.Result {
+	return webobservation.Result{
+		SchemaVersion: probe.SchemaVersion,
+		Probe:         probe.KindWebObservation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    3,
 		Platform:      cliPlatform(),
 		Source:        cliSource(),
 		Input:         input,

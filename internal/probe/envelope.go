@@ -23,6 +23,9 @@ const (
 	// KindDNSObservation records one controlled DNS exchange against an
 	// explicitly configured resolver and transport.
 	KindDNSObservation Kind = "dns_observation"
+	// KindWebObservation records one HTTP or HTTPS first-hop exchange while
+	// dialing an explicit public IP for a logical hostname.
+	KindWebObservation Kind = "web_observation"
 )
 
 // Capability describes how faithfully a probe source provides the intended

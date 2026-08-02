@@ -17,6 +17,7 @@ import (
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory"
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver"
 	"github.com/wangjc683/reachrun/internal/probe"
+	"github.com/wangjc683/reachrun/internal/webobservation"
 )
 
 const phase0ProbeTimeout = 5 * time.Second
@@ -30,11 +31,13 @@ const (
 )
 
 type dnsObserverFactory func(dnsobservation.Config) (dnsobservation.Observer, error)
+type webObserverFactory func(webobservation.Config) (webobservation.Observer, error)
 
 type dependencies struct {
 	systemResolver    systemresolver.Resolver
 	resolverInventory resolverinventory.Observer
 	newDNSObserver    dnsObserverFactory
+	newWebObserver    webObserverFactory
 }
 
 func main() {
@@ -53,6 +56,7 @@ func productionDependencies() dependencies {
 		systemResolver:    systemresolver.New(),
 		resolverInventory: resolverinventory.New(),
 		newDNSObserver:    dnsobservation.New,
+		newWebObserver:    webobservation.New,
 	}
 }
 
@@ -88,10 +92,40 @@ func run(
 			return 2
 		}
 		return runDNSObservation(ctx, request, provider, stdout, stderr, deps)
+	case "web-observe":
+		request, ok := parseWebObservationArgs(args)
+		if !ok {
+			printUsage(stderr)
+			return 2
+		}
+		return runWebObservation(ctx, request, stdout, stderr, deps.newWebObserver)
 	default:
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runWebObservation(
+	ctx context.Context,
+	request webobservation.Request,
+	stdout io.Writer,
+	stderr io.Writer,
+	newObserver webObserverFactory,
+) int {
+	probeContext, cancel := context.WithTimeout(ctx, phase0ProbeTimeout)
+	defer cancel()
+
+	observer, err := newObserver(webobservation.Config{Timeout: phase0ProbeTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create Web observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(probeContext, request)
+	if err := webobservation.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid Web observation result: %v\n", err)
+		return 1
+	}
+	return emitResult(stdout, stderr, result, result.Outcome)
 }
 
 func runResolve(
@@ -216,6 +250,28 @@ func parseDNSObservationArgs(args []string) (dnsobservation.Request, string, boo
 		Resolver:  resolver,
 		Transport: transport,
 	}, provider, true
+}
+
+func parseWebObservationArgs(args []string) (webobservation.Request, bool) {
+	if len(args) != 4 || args[0] != "web-observe" {
+		return webobservation.Request{}, false
+	}
+
+	var scheme webobservation.Scheme
+	switch args[1] {
+	case string(webobservation.SchemeHTTP):
+		scheme = webobservation.SchemeHTTP
+	case string(webobservation.SchemeHTTPS):
+		scheme = webobservation.SchemeHTTPS
+	default:
+		return webobservation.Request{}, false
+	}
+
+	return webobservation.Request{
+		Scheme:   scheme,
+		Hostname: args[2],
+		DialIP:   args[3],
+	}, true
 }
 
 func resolverFor(provider string, transport dnsobservation.Transport) (dnsobservation.ResolverID, bool) {
@@ -366,5 +422,6 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  reachrun resolve <hostname>")
 	fmt.Fprintln(output, "  reachrun resolver-inventory")
 	fmt.Fprintln(output, "  reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME> <hostname>")
+	fmt.Fprintln(output, "  reachrun web-observe <http|https> <hostname> <public-ip>")
 	fmt.Fprintln(output, "Phase 0 diagnostic only: each valid probe prints one terminal evidence envelope as JSON.")
 }
