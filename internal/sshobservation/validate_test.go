@@ -41,6 +41,7 @@ func TestValidateRejectsBrokenSSHContract(t *testing.T) {
 		"received with reason":         func(result *Result) { result.Evidence.Identification.UnconfirmedReason = UnconfirmedTimeout },
 		"received without client line": func(result *Result) { result.Evidence.Identification.ClientIdentificationSent = false },
 		"invalid server line":          func(result *Result) { result.Evidence.Identification.ServerIdentification = "SSH-2.0-bad-software" },
+		"server line carries CR":       func(result *Result) { result.Evidence.Identification.ServerIdentification += "\r" },
 		"mismatched parsed fields":     func(result *Result) { result.Evidence.Identification.SoftwareVersion = "other" },
 	}
 

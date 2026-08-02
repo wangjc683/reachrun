@@ -69,6 +69,7 @@ func TestObservePreservesReachableButUnconfirmedEvidence(t *testing.T) {
 
 	tests := map[string]struct {
 		serverBytes []byte
+		readErr     error
 		wantReason  UnconfirmedReason
 		wantLines   int
 	}{
@@ -80,6 +81,16 @@ func TestObservePreservesReachableButUnconfirmedEvidence(t *testing.T) {
 			serverBytes: nil,
 			wantReason:  UnconfirmedConnectionClosed,
 		},
+		"partial identification timeout": {
+			serverBytes: []byte("SSH-2.0-Open"),
+			readErr:     context.DeadlineExceeded,
+			wantReason:  UnconfirmedTimeout,
+		},
+		"partial identification reset": {
+			serverBytes: []byte("SSH-2.0-Open"),
+			readErr:     syscall.ECONNRESET,
+			wantReason:  UnconfirmedConnectionReset,
+		},
 		"preamble limit": {
 			serverBytes: []byte(bytes.Repeat([]byte("notice\r\n"), maxPreambleLines+1)),
 			wantReason:  UnconfirmedPreambleLimit,
@@ -90,7 +101,7 @@ func TestObservePreservesReachableButUnconfirmedEvidence(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			conn := newMemoryConn(test.serverBytes, testPublicIPv4+":22")
+			conn := newMemoryConnWithReadError(test.serverBytes, testPublicIPv4+":22", test.readErr)
 			dialer := &recordingDialer{conn: conn}
 			observer := mustTestObserver(t, Config{}, dependencies{dialContext: dialer.DialContext})
 			result := observer.Observe(context.Background(), Request{DialIP: testPublicIPv4})
@@ -105,6 +116,38 @@ func TestObservePreservesReachableButUnconfirmedEvidence(t *testing.T) {
 				t.Fatalf("result = %#v, want reachable/unconfirmed %q", result, test.wantReason)
 			}
 		})
+	}
+}
+
+func TestObserveTCPFailureDurationIsOnlyConnectAttempt(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC)
+	moments := []time.Time{
+		start,
+		start.Add(10 * time.Millisecond),
+		start.Add(45 * time.Millisecond),
+		start.Add(45 * time.Millisecond),
+	}
+	next := 0
+	now := func() time.Time {
+		if next >= len(moments) {
+			t.Fatalf("clock called more than %d times", len(moments))
+		}
+		moment := moments[next]
+		next++
+		return moment
+	}
+
+	dialer := &recordingDialer{err: syscall.ECONNREFUSED}
+	observer := mustTestObserver(t, Config{}, dependencies{now: now, dialContext: dialer.DialContext})
+	result := observer.Observe(context.Background(), Request{DialIP: testPublicIPv4})
+	assertFailure(t, result, probe.OutcomeFailed, FailureTCPConnectionRefused)
+	if result.DurationMS != 35 {
+		t.Fatalf("duration_ms = %d, want 35 ms TCP attempt", result.DurationMS)
+	}
+	if next != len(moments) {
+		t.Fatalf("clock calls = %d, want %d", next, len(moments))
 	}
 }
 
@@ -246,19 +289,28 @@ func assertSingleDial(t *testing.T, dialer *recordingDialer, network, address st
 type memoryConn struct {
 	mu      sync.Mutex
 	reader  *bytes.Reader
+	readErr error
 	written bytes.Buffer
 	remote  net.Addr
 	closed  bool
 }
 
 func newMemoryConn(read []byte, remote string) *memoryConn {
-	return &memoryConn{reader: bytes.NewReader(read), remote: staticAddress(remote)}
+	return newMemoryConnWithReadError(read, remote, nil)
+}
+
+func newMemoryConnWithReadError(read []byte, remote string, readErr error) *memoryConn {
+	return &memoryConn{reader: bytes.NewReader(read), readErr: readErr, remote: staticAddress(remote)}
 }
 
 func (c *memoryConn) Read(data []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.reader.Read(data)
+	n, err := c.reader.Read(data)
+	if n == 0 && errors.Is(err, io.EOF) && c.readErr != nil {
+		return 0, c.readErr
+	}
+	return n, err
 }
 
 func (c *memoryConn) Write(data []byte) (int, error) {

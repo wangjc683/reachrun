@@ -85,11 +85,12 @@ func Validate(result Result) error {
 		if !identification.ClientIdentificationSent {
 			return fmt.Errorf("received identification requires the client line to be sent")
 		}
-		parsed, err := parseIdentificationLine([]byte(identification.ServerIdentification + "\n"))
+		parsed, err := parseIdentificationLine([]byte(identification.ServerIdentification + "\r\n"))
 		if err != nil {
 			return fmt.Errorf("server identification is invalid: %w", err)
 		}
-		if parsed.protocolVersion != identification.ProtocolVersion ||
+		if parsed.raw != identification.ServerIdentification ||
+			parsed.protocolVersion != identification.ProtocolVersion ||
 			parsed.softwareVersion != identification.SoftwareVersion ||
 			parsed.comments != identification.Comments {
 			return fmt.Errorf("structured identification fields do not match the server line")

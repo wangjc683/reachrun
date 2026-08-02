@@ -204,11 +204,11 @@ type Observer interface {
 
 `Request` 只有一个公网字面量 IP 和一个端口；端口为零时使用 `22`。IPv4 与 IPv6 分开调用，module 不重试、不扫描端口，也不产生资产或跨境阻断判断。Web 与 SSH 在连接前共同调用 `internal/nettarget` 的唯一公网地址策略，随后只用 `tcp4` 或 `tcp6` 拨已校验的字面量地址。
 
-TCP 建立后，implementation 发送固定的 `SSH-2.0-ReachRun_Phase0` 客户端 identification，接受最多 16 条、合计最多 4 KiB 的服务端前置行，再读取最多 255 字节的 `SSH-` identification。收到合法行后立即关闭连接；单字节有界读取不会消费后续 key-exchange packet，也不会读取、上传或使用 SSH 密钥。这个交换遵循 [RFC 4253 §4.2](https://www.rfc-editor.org/rfc/rfc4253#section-4.2) 的版本交换形状，同时用固定资源上限约束恶意或错误端点。
+TCP 建立后，implementation 发送固定的 `SSH-2.0-ReachRun_Phase0` 客户端 identification，接受最多 16 条、合计最多 4 KiB 的服务端前置行，再读取最多 255 字节的 `SSH-` identification。只有 CRLF 结尾的 `2.0`，以及兼容用的 `1.99`（允许仅 LF 结尾）会被识别为 `received`；software version 与 comments 只接受协议允许的可打印 ASCII。收到合法行后立即关闭连接；单字节有界读取不会消费后续 key-exchange packet，也不会读取、上传或使用 SSH 密钥。这个交换遵循 [RFC 4253 §4.2](https://www.rfc-editor.org/rfc/rfc4253#section-4.2) 的版本交换形状，同时用固定资源上限约束恶意或错误端点。
 
 证据按两层表达：
 
-- TCP 未建立时产生 `tcp_connection_refused`、`tcp_no_route`、`tcp_timeout`、`tcp_connection_reset` 或 `tcp_failure`；
+- TCP 未建立时产生 `tcp_connection_refused`、`tcp_no_route`、`tcp_timeout`、`tcp_connection_reset` 或 `tcp_failure`；由于没有进入后续阶段，此时 envelope 的 `duration_ms` 就是该次有界 TCP 建连尝试耗时；
 - TCP 已建立后始终形成 evidence。合法 identification 为 `received`；非法 identification、等待超时、连接关闭/重置、前置行超限或其他交换错误为 `unconfirmed`，并保留稳定 `unconfirmed_reason`。
 
 因此 `outcome=succeeded` 只表示探测成功取得了可用事实，不等于 SSH 登录成功。`received` 只确认 SSH 协议端点响应；`unconfirmed` 只确认端口可达但未确认 SSH。用户取消仍覆盖任何迟到成功并返回 `cancelled`。

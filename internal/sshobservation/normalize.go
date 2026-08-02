@@ -7,8 +7,6 @@ import (
 )
 
 type configuredTarget struct {
-	ip       netip.Addr
-	port     uint16
 	network  string
 	endpoint string
 }
@@ -42,8 +40,6 @@ func normalizeRequest(request Request) (Input, configuredTarget, error) {
 		network = "tcp4"
 	}
 	return input, configuredTarget{
-		ip:       address,
-		port:     port,
 		network:  network,
 		endpoint: netip.AddrPortFrom(address, port).String(),
 	}, nil

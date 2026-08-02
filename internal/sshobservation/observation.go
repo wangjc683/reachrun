@@ -89,7 +89,9 @@ func (o *observer) Observe(ctx context.Context, request Request) Result {
 	connectDone := o.now()
 	if err != nil {
 		outcome, code := classifyTCPFailure(ctx, attemptCtx, err)
-		return o.failureResult(startedAt, input, outcome, code, err)
+		// No later protocol stage ran, so duration_ms is the bounded TCP
+		// attempt duration for this failure.
+		return o.failureResult(connectStarted, input, outcome, code, err)
 	}
 	defer conn.Close()
 

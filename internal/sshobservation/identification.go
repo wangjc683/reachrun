@@ -7,15 +7,12 @@ import (
 	"io"
 	"net"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
 const (
 	maxIdentificationBytes = 255
 	maxPreambleLines       = 16
 	maxPreambleBytes       = 4 << 10
-	maxObservedLineBytes   = maxPreambleBytes + 1
 )
 
 var (
@@ -44,16 +41,16 @@ func exchangeIdentification(conn net.Conn) (parsedIdentification, error) {
 	preambleLines := 0
 	preambleBytes := 0
 	for {
-		line, readErr := readBoundedLine(conn, maxObservedLineBytes)
+		line, readErr := readServerLine(conn, maxPreambleBytes-preambleBytes)
 		startsSSH := bytes.HasPrefix(line, []byte("SSH-"))
 		if readErr != nil {
-			if startsSSH {
-				return parsedIdentification{
-					preambleLines:  preambleLines,
-					clientLineSent: clientSent,
-				}, fmt.Errorf("%w: version line was not bounded and terminated: %v", errInvalidIdentification, readErr)
-			}
 			if errors.Is(readErr, errLineLimit) {
+				if startsSSH {
+					return parsedIdentification{
+						preambleLines:  preambleLines,
+						clientLineSent: clientSent,
+					}, fmt.Errorf("%w: version line exceeded %d bytes", errInvalidIdentification, maxIdentificationBytes)
+				}
 				return parsedIdentification{
 					preambleLines:  preambleLines,
 					clientLineSent: clientSent,
@@ -98,18 +95,34 @@ func writeAll(writer io.Writer, data []byte) (int, error) {
 	return written, nil
 }
 
-func readBoundedLine(reader io.Reader, limit int) ([]byte, error) {
-	line := make([]byte, 0, min(limit, maxIdentificationBytes))
+func readServerLine(reader io.Reader, preambleRemaining int) ([]byte, error) {
+	sshPrefix := []byte("SSH-")
+	line := make([]byte, 0, min(max(preambleRemaining, len(sshPrefix)), maxIdentificationBytes))
 	var one [1]byte
 	for {
 		n, err := reader.Read(one[:])
 		if n > 0 {
 			line = append(line, one[0])
-			if len(line) > limit {
-				return line, errLineLimit
-			}
-			if one[0] == '\n' {
-				return line, nil
+
+			startsSSH := len(line) >= len(sshPrefix) && bytes.HasPrefix(line, sshPrefix)
+			couldStartSSH := len(line) < len(sshPrefix) && bytes.HasPrefix(sshPrefix, line)
+			if startsSSH {
+				if one[0] == '\n' {
+					return line, nil
+				}
+				if len(line) >= maxIdentificationBytes {
+					return line, errLineLimit
+				}
+			} else if !couldStartSSH {
+				if len(line) > preambleRemaining {
+					return line, errLineLimit
+				}
+				if one[0] == '\n' {
+					return line, nil
+				}
+				if len(line) >= preambleRemaining {
+					return line, errLineLimit
+				}
 			}
 		}
 		if err != nil {
@@ -130,7 +143,8 @@ func parseIdentificationLine(line []byte) (parsedIdentification, error) {
 	}
 
 	content := line[:len(line)-1]
-	if len(content) > 0 && content[len(content)-1] == '\r' {
+	hadCarriageReturn := len(content) > 0 && content[len(content)-1] == '\r'
+	if hadCarriageReturn {
 		content = content[:len(content)-1]
 	}
 	if !bytes.HasPrefix(content, []byte("SSH-")) {
@@ -155,7 +169,10 @@ func parseIdentificationLine(line []byte) (parsedIdentification, error) {
 	}
 
 	if !validProtocolVersion(protocolVersion) {
-		return parsedIdentification{}, fmt.Errorf("%w: malformed protocol version", errInvalidIdentification)
+		return parsedIdentification{}, fmt.Errorf("%w: unsupported protocol version", errInvalidIdentification)
+	}
+	if protocolVersion == "2.0" && !hadCarriageReturn {
+		return parsedIdentification{}, fmt.Errorf("%w: SSH 2.0 requires CRLF termination", errInvalidIdentification)
 	}
 	if !validVersionField(softwareVersion) {
 		return parsedIdentification{}, fmt.Errorf("%w: malformed software version", errInvalidIdentification)
@@ -173,11 +190,7 @@ func parseIdentificationLine(line []byte) (parsedIdentification, error) {
 }
 
 func validProtocolVersion(value string) bool {
-	if !validVersionField(value) || strings.Count(value, ".") != 1 {
-		return false
-	}
-	major, minor, found := strings.Cut(value, ".")
-	return found && allDigits(major) && allDigits(minor)
+	return value == "2.0" || value == "1.99"
 }
 
 func validVersionField(value string) bool {
@@ -193,23 +206,8 @@ func validVersionField(value string) bool {
 }
 
 func validComments(value string) bool {
-	if !utf8.ValidString(value) {
-		return false
-	}
-	for _, character := range value {
-		if unicode.IsControl(character) {
-			return false
-		}
-	}
-	return true
-}
-
-func allDigits(value string) bool {
-	if value == "" {
-		return false
-	}
 	for i := 0; i < len(value); i++ {
-		if value[i] < '0' || value[i] > '9' {
+		if value[i] < 32 || value[i] > 126 {
 			return false
 		}
 	}
