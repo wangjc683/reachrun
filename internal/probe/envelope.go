@@ -26,6 +26,9 @@ const (
 	// KindWebObservation records one HTTP or HTTPS first-hop exchange while
 	// dialing an explicit public IP for a logical hostname.
 	KindWebObservation Kind = "web_observation"
+	// KindSSHObservation records one bounded SSH identification exchange while
+	// dialing an explicit public IP and port.
+	KindSSHObservation Kind = "ssh_observation"
 )
 
 // Capability describes how faithfully a probe source provides the intended

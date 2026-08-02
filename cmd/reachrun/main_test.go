@@ -19,6 +19,8 @@ import (
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver"
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver/systemresolvertest"
 	"github.com/wangjc683/reachrun/internal/probe"
+	"github.com/wangjc683/reachrun/internal/sshobservation"
+	"github.com/wangjc683/reachrun/internal/sshobservation/sshobservationtest"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation/webobservationtest"
 )
@@ -827,6 +829,142 @@ func TestRunReportsWebObserverFactoryErrorWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRunSSHObservationMapsDefaultAndCustomPorts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		args   []string
+		result sshobservation.Result
+		code   int
+	}{
+		{
+			name:   "default port receives SSH identification",
+			args:   []string{"ssh-observe", "93.184.216.34"},
+			result: cliSSHReceivedResult("93.184.216.34", 22),
+			code:   0,
+		},
+		{
+			name:   "custom port is reachable but unconfirmed",
+			args:   []string{"ssh-observe", "2606:4700:4700::1111", "2222"},
+			result: cliSSHUnconfirmedResult("2606:4700:4700::1111", 2222),
+			code:   0,
+		},
+		{
+			name: "TCP failure",
+			args: []string{"ssh-observe", "93.184.216.34", "22"},
+			result: cliSSHFailureResult(
+				"93.184.216.34",
+				22,
+				probe.OutcomeFailed,
+				sshobservation.FailureTCPConnectionRefused,
+			),
+			code: 1,
+		},
+		{
+			name: "cancellation",
+			args: []string{"ssh-observe", "93.184.216.34"},
+			result: cliSSHFailureResult(
+				"93.184.216.34",
+				22,
+				probe.OutcomeCancelled,
+				probe.FailureCancelled,
+			),
+			code: 130,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			observer := sshobservationtest.New(test.result)
+			factory := &scriptedSSHFactory{observer: observer}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				test.args,
+				&stdout,
+				&stderr,
+				dependencies{newSSHObserver: factory.New},
+			)
+			if code != test.code {
+				t.Fatalf("run() = %d, want %d; stderr = %q", code, test.code, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			decoded := decodeOneJSON[sshobservation.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+			wantRequest := sshobservation.Request{
+				DialIP: test.result.Input.DialIP,
+				Port:   test.result.Input.Port,
+			}
+			if got := observer.Calls(); !reflect.DeepEqual(got, []sshobservationtest.Call{{Request: wantRequest}}) {
+				t.Fatalf("SSH calls = %#v, want request %#v", got, wantRequest)
+			}
+			if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+				t.Fatalf("SSH timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+			}
+		})
+	}
+}
+
+func TestRunSSHObservationPassesInvalidIPToObserver(t *testing.T) {
+	t.Parallel()
+
+	result := cliSSHInvalidInputResult("not-an-ip", 22)
+	observer := sshobservationtest.New(result)
+	factory := &scriptedSSHFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"ssh-observe", "not-an-ip"},
+		&stdout,
+		&stderr,
+		dependencies{newSSHObserver: factory.New},
+	)
+	if code != 1 || stderr.Len() != 0 {
+		t.Fatalf("run() = %d, stderr = %q; want 1 and empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[sshobservation.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	wantRequest := sshobservation.Request{DialIP: "not-an-ip", Port: 22}
+	if got := observer.Calls(); !reflect.DeepEqual(got, []sshobservationtest.Call{{Request: wantRequest}}) {
+		t.Fatalf("SSH calls = %#v, want request %#v", got, wantRequest)
+	}
+}
+
+func TestRunReportsSSHObserverFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedSSHFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"ssh-observe", "93.184.216.34"},
+		&stdout,
+		&stderr,
+		dependencies{newSSHObserver: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run() = %d, stdout = %q; want 1 and empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create SSH observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+		t.Fatalf("SSH timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+	}
+}
+
 func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -845,6 +983,11 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 		"Web missing argument":         {"web-observe", "https", "example.com"},
 		"Web extra argument":           {"web-observe", "https", "example.com", "93.184.216.34", "extra"},
 		"unknown Web scheme":           {"web-observe", "HTTPS", "example.com", "93.184.216.34"},
+		"SSH missing IP":               {"ssh-observe"},
+		"SSH extra argument":           {"ssh-observe", "93.184.216.34", "22", "extra"},
+		"SSH nonnumeric port":          {"ssh-observe", "93.184.216.34", "ssh"},
+		"SSH zero port":                {"ssh-observe", "93.184.216.34", "0"},
+		"SSH oversized port":           {"ssh-observe", "93.184.216.34", "65536"},
 	}
 
 	for name, args := range tests {
@@ -854,6 +997,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			inventory := resolverinventorytest.New()
 			factory := &scriptedDNSFactory{observer: dnsobservationtest.New()}
 			webFactory := &scriptedWebFactory{observer: webobservationtest.New()}
+			sshFactory := &scriptedSSHFactory{observer: sshobservationtest.New()}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 
@@ -867,6 +1011,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 					resolverInventory: inventory,
 					newDNSObserver:    factory.New,
 					newWebObserver:    webFactory.New,
+					newSSHObserver:    sshFactory.New,
 				},
 			)
 			if code != 2 {
@@ -878,17 +1023,19 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			if !strings.Contains(stderr.String(), "Phase 0 diagnostic") ||
 				!strings.Contains(stderr.String(), "reachrun resolver-inventory") ||
 				!strings.Contains(stderr.String(), "reachrun dns-observe") ||
-				!strings.Contains(stderr.String(), "reachrun web-observe") {
+				!strings.Contains(stderr.String(), "reachrun web-observe") ||
+				!strings.Contains(stderr.String(), "reachrun ssh-observe") {
 				t.Fatalf("stderr = %q, want Phase 0 usage", stderr.String())
 			}
 			if len(resolver.Calls()) != 0 || len(inventory.Calls()) != 0 ||
-				len(factory.calls) != 0 || len(webFactory.calls) != 0 {
+				len(factory.calls) != 0 || len(webFactory.calls) != 0 || len(sshFactory.calls) != 0 {
 				t.Fatalf(
-					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, Web factory %#v; want none",
+					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, Web factory %#v, SSH factory %#v; want none",
 					resolver.Calls(),
 					inventory.Calls(),
 					factory.calls,
 					webFactory.calls,
+					sshFactory.calls,
 				)
 			}
 		})
@@ -932,6 +1079,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 				}).New,
 			},
 			wantError: "invalid Web observation result",
+		},
+		"SSH observation": {
+			args: []string{"ssh-observe", "93.184.216.34"},
+			deps: dependencies{
+				newSSHObserver: (&scriptedSSHFactory{
+					observer: sshobservationtest.New(sshobservation.Result{}),
+				}).New,
+			},
+			wantError: "invalid SSH observation result",
 		},
 	}
 
@@ -1098,6 +1254,25 @@ type scriptedWebFactory struct {
 	calls    []webobservation.Config
 }
 
+type scriptedSSHFactory struct {
+	observer sshobservation.Observer
+	err      error
+	calls    []sshobservation.Config
+}
+
+func (f *scriptedSSHFactory) New(config sshobservation.Config) (sshobservation.Observer, error) {
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedSSHFactory) singleConfig(t *testing.T) sshobservation.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("SSH factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
+}
+
 func (f *scriptedWebFactory) New(config webobservation.Config) (webobservation.Observer, error) {
 	f.calls = append(f.calls, config)
 	return f.observer, f.err
@@ -1132,6 +1307,15 @@ func (f webObserverFunc) Observe(
 	ctx context.Context,
 	request webobservation.Request,
 ) webobservation.Result {
+	return f(ctx, request)
+}
+
+type sshObserverFunc func(context.Context, sshobservation.Request) sshobservation.Result
+
+func (f sshObserverFunc) Observe(
+	ctx context.Context,
+	request sshobservation.Request,
+) sshobservation.Result {
 	return f(ctx, request)
 }
 
@@ -1419,6 +1603,106 @@ func cliWebResult(
 	return webobservation.Result{
 		SchemaVersion: probe.SchemaVersion,
 		Probe:         probe.KindWebObservation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    3,
+		Platform:      cliPlatform(),
+		Source:        cliSource(),
+		Input:         input,
+		Outcome:       outcome,
+		Evidence:      evidence,
+		Failure:       failure,
+	}
+}
+
+func cliSSHReceivedResult(dialIP string, port uint16) sshobservation.Result {
+	evidence := sshobservation.Evidence{
+		RemoteEndpoint: netip.AddrPortFrom(netip.MustParseAddr(dialIP), port).String(),
+		TCPConnectMS:   1,
+		Identification: sshobservation.Identification{
+			Status:                   sshobservation.IdentificationReceived,
+			ServerIdentification:     "SSH-2.0-OpenSSH_9.9 test",
+			ProtocolVersion:          "2.0",
+			SoftwareVersion:          "OpenSSH_9.9",
+			Comments:                 "test",
+			ClientIdentificationSent: true,
+			ExchangeMS:               1,
+		},
+	}
+	return cliSSHResult(
+		probe.OutcomeSucceeded,
+		cliSSHInput(dialIP, port),
+		&evidence,
+		nil,
+	)
+}
+
+func cliSSHUnconfirmedResult(dialIP string, port uint16) sshobservation.Result {
+	evidence := sshobservation.Evidence{
+		RemoteEndpoint: netip.AddrPortFrom(netip.MustParseAddr(dialIP), port).String(),
+		TCPConnectMS:   1,
+		Identification: sshobservation.Identification{
+			Status:                   sshobservation.IdentificationUnconfirmed,
+			UnconfirmedReason:        sshobservation.UnconfirmedTimeout,
+			ClientIdentificationSent: true,
+			ExchangeMS:               1,
+		},
+	}
+	return cliSSHResult(
+		probe.OutcomeSucceeded,
+		cliSSHInput(dialIP, port),
+		&evidence,
+		nil,
+	)
+}
+
+func cliSSHFailureResult(
+	dialIP string,
+	port uint16,
+	outcome probe.Outcome,
+	code probe.FailureCode,
+) sshobservation.Result {
+	return cliSSHResult(
+		outcome,
+		cliSSHInput(dialIP, port),
+		nil,
+		&probe.Failure{Code: code, Detail: "scripted failure"},
+	)
+}
+
+func cliSSHInvalidInputResult(dialIP string, port uint16) sshobservation.Result {
+	return cliSSHResult(
+		probe.OutcomeFailed,
+		cliSSHInput(dialIP, port),
+		nil,
+		&probe.Failure{Code: probe.FailureInvalidInput, Detail: "scripted invalid input"},
+	)
+}
+
+func cliSSHInput(dialIP string, port uint16) sshobservation.Input {
+	input := sshobservation.Input{
+		DialIP:               dialIP,
+		Port:                 port,
+		ClientIdentification: sshobservation.ClientIdentification,
+	}
+	if address, err := netip.ParseAddr(dialIP); err == nil {
+		if address.Unmap().Is4() {
+			input.Family = sshobservation.FamilyIPv4
+		} else {
+			input.Family = sshobservation.FamilyIPv6
+		}
+	}
+	return input
+}
+
+func cliSSHResult(
+	outcome probe.Outcome,
+	input sshobservation.Input,
+	evidence *sshobservation.Evidence,
+	failure *probe.Failure,
+) sshobservation.Result {
+	return sshobservation.Result{
+		SchemaVersion: probe.SchemaVersion,
+		Probe:         probe.KindSSHObservation,
 		ObservedAt:    cliObservedAt(),
 		DurationMS:    3,
 		Platform:      cliPlatform(),

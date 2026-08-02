@@ -8,11 +8,12 @@
 
 ## 1. 当前实现范围
 
-仓库目前实现了 Phase 0 的前三条垂直切片：
+仓库目前实现了 Phase 0 的前四条垂直切片：
 
 1. 通过操作系统普通 hostname 路径取得 **System Resolution**；
 2. 分别取得 **Resolver Inventory**，以及对明确 resolver 发起 UDP、TCP 或 DoH **DNS Observation**；
-3. 对一个明确候选公网 IP 发起第一跳 HTTP/HTTPS **Web Observation**，同时保留正确的 Host、TLS SNI 与证书身份。
+3. 对一个明确候选公网 IP 发起第一跳 HTTP/HTTPS **Web Observation**，同时保留正确的 Host、TLS SNI 与证书身份；
+4. 对一个明确候选公网 IP 与 SSH 端口发起受限 **SSH Observation**，区分 TCP 未建立、端口可达但未确认 SSH，以及收到合法 SSH identification。
 
 临时 CLI 为每次调用输出一份版本化 JSON **探测证据**。这些证据用于验证跨平台网络能力，不是 V1 浏览器应用，也不包含资产、批次、重试、判断或持久化模型。
 
@@ -26,10 +27,16 @@ cmd/reachrun
     ├── internal/platform/resolverinventory
     ├── internal/dnsobservation
     │        └── golang.org/x/net/dns/dnsmessage
-    └── internal/webobservation
-             └── Go net/http + crypto/tls
+    ├── internal/webobservation
+    │        └── Go net/http + crypto/tls
+    └── internal/sshobservation
+             └── Go net
 
-四个 probe module
+Web 与 SSH Observation
+    └── internal/nettarget
+            提供唯一的公网字面量 IP 安全策略
+
+五个 probe module
     └── internal/probe
             提供 Phase 0 共用 envelope 生命周期与不变量
 
@@ -45,6 +52,8 @@ Windows resolver inventory
 | `internal/platform/resolverinventory` | 当前 resolver 配置的 best-effort 快照及平台能力说明 |
 | `internal/dnsobservation` | 向不可变配置中的明确 resolver 发起一次 UDP、TCP 或 RFC 8484 DoH 查询，并解析类型化 DNS 响应 |
 | `internal/webobservation` | 将 hostname 身份与拨号 IP 分开，对一个候选公网 IP 发起一次第一跳 HTTP/HTTPS 观测，并保留 TCP、TLS 与 HTTP 层证据 |
+| `internal/sshobservation` | 对一个候选公网 IP 与单个 SSH 端口执行 TCP 建连和受限 identification 交换，不进入密钥交换或认证 |
+| `internal/nettarget` | 规范化单个公网字面量 IP，并集中拒绝 loopback、私网、链路本地、组播、文档保留等产品禁止地址 |
 | 各 `*test` 子包 | 给调用方测试使用的有限队列 adapter；精确返回 fixture、记录调用，队列耗尽时 panic |
 
 `internal/probe` 的泛型只统一 Phase 0 探测的公共头部；每种 probe 仍定义具体 `Input`、`Evidence` 和允许的失败类别，不得退化成 `map[string]any`、`json.RawMessage` 或无类型的万能事件。该 envelope 也不自动成为未来本地 HTTP event 或持久化 schema。
@@ -183,7 +192,28 @@ implementation 在连接前拒绝 loopback、私网、链路本地、组播、�
 
 公共 envelope v1 仍保持 evidence/failure 互斥，因此失败结果暂不携带失败前已完成阶段的 partial timing。当前使用稳定 failure code 保留失败层级，候选 IP 已在 input 中，总耗时由 envelope 记录；不使用 `failure.detail` 偷渡结构化判断。
 
-## 8. CLI 组合与安全选择
+## 8. SSH Observation seam
+
+调用方只依赖：
+
+```go
+type Observer interface {
+    Observe(ctx context.Context, request Request) Result
+}
+```
+
+`Request` 只有一个公网字面量 IP 和一个端口；端口为零时使用 `22`。IPv4 与 IPv6 分开调用，module 不重试、不扫描端口，也不产生资产或跨境阻断判断。Web 与 SSH 在连接前共同调用 `internal/nettarget` 的唯一公网地址策略，随后只用 `tcp4` 或 `tcp6` 拨已校验的字面量地址。
+
+TCP 建立后，implementation 发送固定的 `SSH-2.0-ReachRun_Phase0` 客户端 identification，接受最多 16 条、合计最多 4 KiB 的服务端前置行，再读取最多 255 字节的 `SSH-` identification。收到合法行后立即关闭连接；单字节有界读取不会消费后续 key-exchange packet，也不会读取、上传或使用 SSH 密钥。这个交换遵循 [RFC 4253 §4.2](https://www.rfc-editor.org/rfc/rfc4253#section-4.2) 的版本交换形状，同时用固定资源上限约束恶意或错误端点。
+
+证据按两层表达：
+
+- TCP 未建立时产生 `tcp_connection_refused`、`tcp_no_route`、`tcp_timeout`、`tcp_connection_reset` 或 `tcp_failure`；
+- TCP 已建立后始终形成 evidence。合法 identification 为 `received`；非法 identification、等待超时、连接关闭/重置、前置行超限或其他交换错误为 `unconfirmed`，并保留稳定 `unconfirmed_reason`。
+
+因此 `outcome=succeeded` 只表示探测成功取得了可用事实，不等于 SSH 登录成功。`received` 只确认 SSH 协议端点响应；`unconfirmed` 只确认端口可达但未确认 SSH。用户取消仍覆盖任何迟到成功并返回 `cancelled`。
+
+## 9. CLI 组合与安全选择
 
 当前诊断入口：
 
@@ -192,9 +222,10 @@ reachrun resolve <hostname>
 reachrun resolver-inventory
 reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME> <hostname>
 reachrun web-observe <http|https> <hostname> <public-ip>
+reachrun ssh-observe <public-ip> [port]
 ```
 
-每个合法命令只向 stdout 输出一份 terminal envelope。退出码为：成功 `0`、probe failure `1`、用法错误 `2`、取消 `130`。NXDOMAIN、NODATA 或 SERVFAIL 已收到合法 DNS 响应，任意 `4xx/5xx` 已收到合法 HTTP 响应，因此都退出 `0`。
+每个合法命令只向 stdout 输出一份 terminal envelope。退出码为：成功 `0`、probe failure `1`、用法错误 `2`、取消 `130`。NXDOMAIN、NODATA 或 SERVFAIL 已收到合法 DNS 响应，任意 `4xx/5xx` 已收到合法 HTTP 响应，以及 SSH 端口可达但 identification 未确认，都是成功取得的 evidence，因此都退出 `0`。
 
 `current` 只允许 UDP/TCP。CLI 先取得一次 inventory，再按观察顺序选择第一个可拨号的 53 端口 server；会跳过其他端口、缺少 zone 的 IPv6 link-local、multicast 与 limited broadcast，IPv6 link-local 使用 evidence 中的 zone/interface。这个入口只验证“向该明确候选查询会发生什么”，不声称自动实现平台的 split-DNS 路由。私网 resolver 只能以这条 inventory 派生路径进入 DNS observer。
 
@@ -202,8 +233,10 @@ reachrun web-observe <http|https> <hostname> <public-ip>
 
 `web-observe` 不解析 hostname，也不会从 HTTPS 自动 fallback 到 HTTP；它只用 hostname 建立 Host/SNI/证书身份，并连接命令中的单个公网 IP。这是 Phase 0 诊断入口，不会将单次超时解释为跨境阻断，也不实现完整公开网站路径、候选对照或重定向编排。
 
-## 9. 当前边界与下一次扩展
+`ssh-observe` 默认端口为 `22`，允许传入服务器资产所需的一个自定义合法端口。CLI 不接受范围、列表或 hostname，也不会调用系统 `ssh` 命令。合法 identification、TCP 已连接但未确认 SSH，以及 TCP 分层失败都只是一份 Phase 0 探测证据。
 
-尚不存在的能力包括 HTTPS/SVCB AliasMode、默认系统公开网站路径、有限重定向、候选成对复核、无主要域名时的有限 TLS 结论、SSH identification、把 IPv6 no-route 解释为中性检测条件的 assessment、批次编排、snapshot、本地 HTTP 与 React UI。它们出现时应各自放入足够深的 module 或未来 `checkrun` implementation，不得给四个现有 probe interface 增加无关方法或建立巨型 `Platform` interface。
+## 10. 当前边界与下一次扩展
 
-System Resolution、Resolver Inventory、DNS Observation 与 Web Observation 必须继续作为并列证据，前三类名称解析证据不嵌入 Web 结果。任何一个单独失败、差异或超时都不能直接产生“DNS 污染”“被墙”或其他因果结论。
+尚不存在的能力包括 HTTPS/SVCB AliasMode、默认系统公开网站路径、有限重定向、候选成对复核、无主要域名时的有限 TLS 结论、把 IPv6 no-route 解释为中性检测条件的 assessment、批次编排、snapshot、本地 HTTP 与 React UI。它们出现时应各自放入足够深的 module 或未来 `checkrun` implementation，不得给五个现有 probe interface 增加无关方法或建立巨型 `Platform` interface。
+
+System Resolution、Resolver Inventory、DNS Observation、Web Observation 与 SSH Observation 必须继续作为并列证据，名称解析证据不嵌入 Web 或 SSH 结果。任何一个单独失败、差异或超时都不能直接产生“DNS 污染”“被墙”或其他因果结论。

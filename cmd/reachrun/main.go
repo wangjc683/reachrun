@@ -17,6 +17,7 @@ import (
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory"
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver"
 	"github.com/wangjc683/reachrun/internal/probe"
+	"github.com/wangjc683/reachrun/internal/sshobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 )
 
@@ -32,12 +33,14 @@ const (
 
 type dnsObserverFactory func(dnsobservation.Config) (dnsobservation.Observer, error)
 type webObserverFactory func(webobservation.Config) (webobservation.Observer, error)
+type sshObserverFactory func(sshobservation.Config) (sshobservation.Observer, error)
 
 type dependencies struct {
 	systemResolver    systemresolver.Resolver
 	resolverInventory resolverinventory.Observer
 	newDNSObserver    dnsObserverFactory
 	newWebObserver    webObserverFactory
+	newSSHObserver    sshObserverFactory
 }
 
 func main() {
@@ -57,6 +60,7 @@ func productionDependencies() dependencies {
 		resolverInventory: resolverinventory.New(),
 		newDNSObserver:    dnsobservation.New,
 		newWebObserver:    webobservation.New,
+		newSSHObserver:    sshobservation.New,
 	}
 }
 
@@ -99,10 +103,40 @@ func run(
 			return 2
 		}
 		return runWebObservation(ctx, request, stdout, stderr, deps.newWebObserver)
+	case "ssh-observe":
+		request, ok := parseSSHObservationArgs(args)
+		if !ok {
+			printUsage(stderr)
+			return 2
+		}
+		return runSSHObservation(ctx, request, stdout, stderr, deps.newSSHObserver)
 	default:
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runSSHObservation(
+	ctx context.Context,
+	request sshobservation.Request,
+	stdout io.Writer,
+	stderr io.Writer,
+	newObserver sshObserverFactory,
+) int {
+	probeContext, cancel := context.WithTimeout(ctx, phase0ProbeTimeout)
+	defer cancel()
+
+	observer, err := newObserver(sshobservation.Config{Timeout: phase0ProbeTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create SSH observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(probeContext, request)
+	if err := sshobservation.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid SSH observation result: %v\n", err)
+		return 1
+	}
+	return emitResult(stdout, stderr, result, result.Outcome)
 }
 
 func runWebObservation(
@@ -274,6 +308,22 @@ func parseWebObservationArgs(args []string) (webobservation.Request, bool) {
 	}, true
 }
 
+func parseSSHObservationArgs(args []string) (sshobservation.Request, bool) {
+	if len(args) < 2 || len(args) > 3 || args[0] != "ssh-observe" {
+		return sshobservation.Request{}, false
+	}
+
+	port := sshobservation.DefaultPort
+	if len(args) == 3 {
+		parsed, err := strconv.ParseUint(args[2], 10, 16)
+		if err != nil || parsed == 0 {
+			return sshobservation.Request{}, false
+		}
+		port = uint16(parsed)
+	}
+	return sshobservation.Request{DialIP: args[1], Port: port}, true
+}
+
 func resolverFor(provider string, transport dnsobservation.Transport) (dnsobservation.ResolverID, bool) {
 	switch provider {
 	case "current":
@@ -423,5 +473,6 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  reachrun resolver-inventory")
 	fmt.Fprintln(output, "  reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME> <hostname>")
 	fmt.Fprintln(output, "  reachrun web-observe <http|https> <hostname> <public-ip>")
+	fmt.Fprintln(output, "  reachrun ssh-observe <public-ip> [port]")
 	fmt.Fprintln(output, "Phase 0 diagnostic only: each valid probe prints one terminal evidence envelope as JSON.")
 }

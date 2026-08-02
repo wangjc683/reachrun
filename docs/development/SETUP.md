@@ -22,6 +22,8 @@ go run ./cmd/reachrun resolve localhost
 go run ./cmd/reachrun resolver-inventory
 go run ./cmd/reachrun dns-observe udp current A example.com
 go run ./cmd/reachrun web-observe https one.one.one.one 1.1.1.1
+# Replace YOUR_SERVER_IP with one of your public server addresses.
+go run ./cmd/reachrun ssh-observe YOUR_SERVER_IP 22
 ```
 
 每个命令向 stdout 输出一份 terminal JSON evidence：
@@ -30,21 +32,24 @@ go run ./cmd/reachrun web-observe https one.one.one.one 1.1.1.1
 - `resolver-inventory`：当前可观察到的 resolver 配置候选；
 - `dns-observe <transport> <provider> <type> <hostname>`：向一个明确 resolver 发起一次 DNS Observation；
 - `web-observe <http|https> <hostname> <public-ip>`：向一个明确候选公网 IP 发起一次第一跳 Web Observation。
+- `ssh-observe <public-ip> [port]`：向一个明确公网 IP 和单个端口发起受限 SSH identification Observation；端口默认 `22`。
 
 `transport` 为 `udp`、`tcp` 或 `doh`；`provider` 为 `current`、`cloudflare` 或 `google`；`type` 当前为 `A`、`AAAA` 或 `CNAME`。`current` 只允许 UDP/TCP，并按 inventory 观察顺序选择第一个可拨号的 53 端口 server；它不声称复现平台 split-DNS 选择，也不会向 multicast 或 limited-broadcast 地址发送查询。Cloudflare/Google 是 Phase 0 的固定 reference endpoint，V1 最终组合仍未确定。
 
 `web-observe` 固定使用 `GET /`，`http` 连接 IP 的 `80` 端口，`https` 连接 `443`。它不用 hostname 做连接前解析，但 HTTP Host、TLS SNI 和证书 hostname 验证仍使用 hostname。每次命令只接受一个 IPv4 或 IPv6 公网候选；完整固定连接契约见 [Web Observation seam](../architecture/OVERVIEW.md#7-web-observation-seam)。当前 Phase 0 backend 只验证 HTTP/1.1，h2-only 服务仍属于未覆盖能力。
 
+`ssh-observe` 只接受一个 IPv4/IPv6 公网字面量和一个合法端口，不接受 hostname、端口范围或列表。它发送固定客户端 identification，有限读取服务端前置行与 identification 后立即关闭，不继续密钥交换或认证，也不读取 SSH 密钥。完整契约见 [SSH Observation seam](../architecture/OVERVIEW.md#8-ssh-observation-seam)。
+
 这些命令是诊断入口，不是 V1 最终的“运行后打开浏览器”体验。
 
 Exit code：
 
-- `0`：probe 成功取得合法证据；DNS 的 NXDOMAIN、NODATA、SERVFAIL 等合法响应，以及 Web 的任意合法 `4xx/5xx` HTTP 响应，也属于成功观测；
+- `0`：probe 成功取得合法证据；DNS 的 NXDOMAIN、NODATA、SERVFAIL 等合法响应、Web 的任意合法 `4xx/5xx` HTTP 响应，以及 SSH 端口可达但 identification 未确认，也属于成功观测；
 - `1`：probe 的 transport/平台/协议执行失败，或内部结果无法通过 contract 校验；
 - `2`：命令用法错误；
 - `130`：用户取消。
 
-每个 CLI 意图当前共享 5 秒总 timeout。DNS 与 Web observer 本身也有有界 timeout，不做普通重试。V1 的并发、分阶段 timeout、重试与熔断仍以 PRD 后续实现为准。
+每个 CLI 意图当前共享 5 秒总 timeout。DNS、Web 与 SSH observer 本身也有有界 timeout，不做普通重试。V1 的并发、分阶段 timeout、重试与熔断仍以 PRD 后续实现为准。
 
 参考 DNS 示例：
 
@@ -64,6 +69,15 @@ go run ./cmd/reachrun web-observe https one.one.one.one 1.1.1.1
 ```
 
 这两条命令会真实联系指定公网 IP，只适合手动 Spike 观察；公网服务的当前结果不属于仓库 contract。单次成功或超时也不足以生成 DNS 异常或跨境阻断归因。
+
+SSH identification 示例：
+
+```bash
+go run ./cmd/reachrun ssh-observe YOUR_SERVER_IP
+go run ./cmd/reachrun ssh-observe YOUR_SERVER_IP 2222
+```
+
+`identification.status=received` 只证明 SSH 服务返回了协议 identification；`unconfirmed` 证明 TCP 端口可达但没有在受限交换内确认 SSH。两者都没有测试密钥交换、服务器主机密钥或登录。TCP 超时也只描述当前网络到该服务端点的事实，不构成 GFW 归因。
 
 ## Verify changes
 
@@ -103,6 +117,6 @@ macOS 和 Windows 的普通构建由 Go 默认选择对应系统 resolver；`GOD
 
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 在 GitHub-hosted macOS、Windows 和 Linux runner 上运行格式检查、`go vet`、全部测试，以及 System Resolution 与 Resolver Inventory 的真实 CLI smoke test。Linux job 统一设置 `-tags=netcgo`。
 
-UDP、TCP、DoH 与 Web contract test 使用进程内受控服务，不依赖公共 resolver 或公网站点是否可达。CI 不对 Cloudflare/Google 或示例 Web endpoint 发真实请求，避免把外部网络波动变成构建结果。
+UDP、TCP、DoH、Web 与 SSH contract test 使用进程内受控服务，不依赖公共 resolver 或公网站点是否可达。CI 不对 Cloudflare/Google 或示例 Web/SSH endpoint 发真实请求，避免把外部网络波动变成构建结果。
 
 CI 证明构建与 contract 在 runner 环境成立，不替代 PRD §19 要求的真实设备 VPN、split DNS、IPv4/IPv6 与平台策略场景验证。
