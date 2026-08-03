@@ -27,6 +27,8 @@ import (
 	"github.com/wangjc683/reachrun/internal/sshobservation/sshobservationtest"
 	"github.com/wangjc683/reachrun/internal/tlsobservation"
 	"github.com/wangjc683/reachrun/internal/tlsobservation/tlsobservationtest"
+	"github.com/wangjc683/reachrun/internal/tlsretrybatch"
+	"github.com/wangjc683/reachrun/internal/tlsretrybatch/tlsretrybatchtest"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation/webobservationtest"
 	"github.com/wangjc683/reachrun/internal/webpath"
@@ -1388,6 +1390,111 @@ func TestRunReportsTLSObserverFactoryErrorWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRunTLSRetryBatchMapsTerminalReportsAndTargets(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		argument string
+		result   tlsretrybatch.Result
+		code     int
+	}{
+		"completed evidence including endpoint failures": {
+			argument: "8.8.8.8,1.1.1.1",
+			result:   cliTLSRetryBatchCompletedResult([]string{"8.8.8.8", "1.1.1.1"}),
+			code:     0,
+		},
+		"batch timeout": {
+			argument: "8.8.8.8",
+			result:   cliTLSRetryBatchStoppedResult("8.8.8.8"),
+			code:     1,
+		},
+		"cancelled": {
+			argument: "8.8.8.8",
+			result:   cliTLSRetryBatchCancelledResult("8.8.8.8"),
+			code:     130,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			observer := tlsretrybatchtest.New(test.result)
+			factory := &scriptedTLSRetryBatchFactory{observer: observer}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run(
+				context.Background(),
+				[]string{"tls-retry-batch", test.argument},
+				&stdout,
+				&stderr,
+				dependencies{newTLSRetryBatchObserver: factory.New},
+			)
+			if code != test.code || stderr.Len() != 0 {
+				t.Fatalf("run/stderr = %d/%q, want %d/empty", code, stderr.String(), test.code)
+			}
+			decoded := decodeOneJSON[tlsretrybatch.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+			wantRequest := tlsretrybatch.Request{Targets: strings.Split(test.argument, ",")}
+			if got := observer.Calls(); !reflect.DeepEqual(got, []tlsretrybatchtest.Call{{Request: wantRequest}}) {
+				t.Fatalf("TLS retry-batch calls = %#v, want %#v", got, wantRequest)
+			}
+			if config := factory.singleConfig(t); config.Timeout != phase0TLSRetryBatchTimeout {
+				t.Fatalf("TLS retry-batch timeout = %s, want %s", config.Timeout, phase0TLSRetryBatchTimeout)
+			}
+		})
+	}
+}
+
+func TestRunTLSRetryBatchPassesSemanticInvalidInputToObserver(t *testing.T) {
+	t.Parallel()
+
+	result := cliTLSRetryBatchInvalidResult("not-an-ip")
+	observer := tlsretrybatchtest.New(result)
+	factory := &scriptedTLSRetryBatchFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"tls-retry-batch", "not-an-ip"},
+		&stdout,
+		&stderr,
+		dependencies{newTLSRetryBatchObserver: factory.New},
+	)
+	if code != 1 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 1/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[tlsretrybatch.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRunReportsTLSRetryBatchFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedTLSRetryBatchFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"tls-retry-batch", "8.8.8.8"},
+		&stdout,
+		&stderr,
+		dependencies{newTLSRetryBatchObserver: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run/stdout = %d/%q, want 1/empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create TLS retry-batch observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0TLSRetryBatchTimeout {
+		t.Fatalf("TLS retry-batch timeout = %s, want %s", config.Timeout, phase0TLSRetryBatchTimeout)
+	}
+}
+
 func TestRunSSHObservationMapsDefaultAndCustomPorts(t *testing.T) {
 	t.Parallel()
 
@@ -1559,6 +1666,8 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 		"SSH oversized port":               {"ssh-observe", "93.184.216.34", "65536"},
 		"TLS missing IP":                   {"tls-observe"},
 		"TLS extra argument":               {"tls-observe", "93.184.216.34", "extra"},
+		"TLS retry batch missing targets":  {"tls-retry-batch"},
+		"TLS retry batch extra argument":   {"tls-retry-batch", "8.8.8.8", "extra"},
 	}
 
 	for name, args := range tests {
@@ -1573,6 +1682,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			webRecheckFactory := &scriptedWebRecheckFactory{observer: webrechecktest.New()}
 			sshFactory := &scriptedSSHFactory{observer: sshobservationtest.New()}
 			tlsFactory := &scriptedTLSFactory{observer: tlsobservationtest.New()}
+			tlsRetryBatchFactory := &scriptedTLSRetryBatchFactory{observer: tlsretrybatchtest.New()}
 			familyConditionFactory := &scriptedFamilyConditionFactory{observer: familyconditiontest.New()}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
@@ -1592,6 +1702,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 					newWebRecheckObserver:      webRecheckFactory.New,
 					newSSHObserver:             sshFactory.New,
 					newTLSObserver:             tlsFactory.New,
+					newTLSRetryBatchObserver:   tlsRetryBatchFactory.New,
 					newFamilyConditionObserver: familyConditionFactory.New,
 				},
 			)
@@ -1610,15 +1721,17 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				!strings.Contains(stderr.String(), "reachrun web-recheck") ||
 				!strings.Contains(stderr.String(), "reachrun ssh-observe") ||
 				!strings.Contains(stderr.String(), "reachrun tls-observe") ||
+				!strings.Contains(stderr.String(), "reachrun tls-retry-batch") ||
 				!strings.Contains(stderr.String(), "reachrun family-conditions") {
 				t.Fatalf("stderr = %q, want Phase 0 usage", stderr.String())
 			}
 			if len(resolver.Calls()) != 0 || len(inventory.Calls()) != 0 ||
 				len(factory.calls) != 0 || len(dnsHTTPSPathFactory.calls) != 0 || len(webFactory.calls) != 0 ||
 				len(webPathFactory.calls) != 0 || len(webRecheckFactory.calls) != 0 || len(sshFactory.calls) != 0 ||
-				len(tlsFactory.calls) != 0 || len(familyConditionFactory.calls) != 0 {
+				len(tlsFactory.calls) != 0 || len(tlsRetryBatchFactory.calls) != 0 ||
+				len(familyConditionFactory.calls) != 0 {
 				t.Fatalf(
-					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, DNS HTTPS-path factory %#v, Web factory %#v, Web-path factory %#v, Web-recheck factory %#v, SSH factory %#v, TLS factory %#v, family-condition factory %#v; want none",
+					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, DNS HTTPS-path factory %#v, Web factory %#v, Web-path factory %#v, Web-recheck factory %#v, SSH factory %#v, TLS factory %#v, TLS retry-batch factory %#v, family-condition factory %#v; want none",
 					resolver.Calls(),
 					inventory.Calls(),
 					factory.calls,
@@ -1628,6 +1741,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 					webRecheckFactory.calls,
 					sshFactory.calls,
 					tlsFactory.calls,
+					tlsRetryBatchFactory.calls,
 					familyConditionFactory.calls,
 				)
 			}
@@ -1726,6 +1840,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 				}).New,
 			},
 			wantError: "invalid TLS observation result",
+		},
+		"TLS retry batch": {
+			args: []string{"tls-retry-batch", "8.8.8.8"},
+			deps: dependencies{
+				newTLSRetryBatchObserver: (&scriptedTLSRetryBatchFactory{
+					observer: tlsretrybatchtest.New(tlsretrybatch.Result{}),
+				}).New,
+			},
+			wantError: "invalid TLS retry-batch result",
 		},
 	}
 
@@ -2079,6 +2202,50 @@ func TestRunTLSObservationPropagatesParentCancellationAndAddsOuterDeadline(t *te
 	}
 }
 
+func TestRunTLSRetryBatchPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
+	t.Parallel()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := cliTLSRetryBatchCancelledResult("8.8.8.8")
+	observer := tlsRetryBatchObserverFunc(func(
+		ctx context.Context,
+		request tlsretrybatch.Request,
+	) tlsretrybatch.Result {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("TLS retry-batch context error = %v, want context.Canceled", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("TLS retry-batch context has no outer deadline")
+		}
+		want := tlsretrybatch.Request{Targets: []string{"8.8.8.8"}}
+		if !reflect.DeepEqual(request, want) {
+			t.Fatalf("TLS retry-batch request = %#v, want %#v", request, want)
+		}
+		return result
+	})
+	factory := &scriptedTLSRetryBatchFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		parent,
+		[]string{"tls-retry-batch", "8.8.8.8"},
+		&stdout,
+		&stderr,
+		dependencies{newTLSRetryBatchObserver: factory.New},
+	)
+	if code != 130 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 130/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[tlsretrybatch.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0TLSRetryBatchTimeout {
+		t.Fatalf("TLS retry-batch timeout = %s, want %s", config.Timeout, phase0TLSRetryBatchTimeout)
+	}
+}
+
 type scriptedDNSFactory struct {
 	observer dnsobservation.Observer
 	err      error
@@ -2147,6 +2314,27 @@ type scriptedTLSFactory struct {
 	observer tlsobservation.Observer
 	err      error
 	calls    []tlsobservation.Config
+}
+
+type scriptedTLSRetryBatchFactory struct {
+	observer tlsretrybatch.Observer
+	err      error
+	calls    []tlsretrybatch.Config
+}
+
+func (f *scriptedTLSRetryBatchFactory) New(
+	config tlsretrybatch.Config,
+) (tlsretrybatch.Observer, error) {
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedTLSRetryBatchFactory) singleConfig(t *testing.T) tlsretrybatch.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("TLS retry-batch factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
 }
 
 type scriptedFamilyConditionFactory struct {
@@ -2301,6 +2489,15 @@ func (f tlsObserverFunc) Observe(
 	ctx context.Context,
 	request tlsobservation.Request,
 ) tlsobservation.Result {
+	return f(ctx, request)
+}
+
+type tlsRetryBatchObserverFunc func(context.Context, tlsretrybatch.Request) tlsretrybatch.Result
+
+func (f tlsRetryBatchObserverFunc) Observe(
+	ctx context.Context,
+	request tlsretrybatch.Request,
+) tlsretrybatch.Result {
 	return f(ctx, request)
 }
 
@@ -3104,6 +3301,107 @@ func cliTLSResult(
 		Outcome:       outcome,
 		Evidence:      evidence,
 		Failure:       failure,
+	}
+}
+
+func cliTLSRetryBatchCompletedResult(targets []string) tlsretrybatch.Result {
+	result := cliTLSRetryBatchResult(targets, tlsretrybatch.StatusCompleted, "", "")
+	for _, target := range targets[:min(len(targets), 4)] {
+		result.Targets = append(result.Targets, tlsretrybatch.TargetResult{
+			DialIP: target,
+			Family: cliTLSInput(target).Family,
+			Status: tlsretrybatch.TargetCompleted,
+			Attempts: []tlsretrybatch.Attempt{{
+				Number: 1,
+				Observation: cliTLSFailureResult(
+					target,
+					probe.OutcomeFailed,
+					tlsobservation.FailureTCPConnectionRefused,
+				),
+			}},
+		})
+	}
+	result.TargetsOmitted = max(0, len(targets)-4)
+	return result
+}
+
+func cliTLSRetryBatchStoppedResult(target string) tlsretrybatch.Result {
+	result := cliTLSRetryBatchResult(
+		[]string{target},
+		tlsretrybatch.StatusStopped,
+		tlsretrybatch.StopBatchTimeout,
+		"context deadline exceeded",
+	)
+	result.Targets = append(result.Targets, tlsretrybatch.TargetResult{
+		DialIP: target,
+		Family: cliTLSInput(target).Family,
+		Status: tlsretrybatch.TargetInterrupted,
+		Attempts: []tlsretrybatch.Attempt{{
+			Number: 1,
+			Observation: cliTLSFailureResult(
+				target,
+				probe.OutcomeFailed,
+				tlsobservation.FailureTCPTimeout,
+			),
+		}},
+	})
+	return result
+}
+
+func cliTLSRetryBatchCancelledResult(target string) tlsretrybatch.Result {
+	result := cliTLSRetryBatchResult(
+		[]string{target},
+		tlsretrybatch.StatusCancelled,
+		tlsretrybatch.StopCancelled,
+		"context canceled",
+	)
+	result.Targets = append(result.Targets, tlsretrybatch.TargetResult{
+		DialIP:   target,
+		Family:   cliTLSInput(target).Family,
+		Status:   tlsretrybatch.TargetNotStarted,
+		Attempts: []tlsretrybatch.Attempt{},
+	})
+	return result
+}
+
+func cliTLSRetryBatchInvalidResult(target string) tlsretrybatch.Result {
+	return cliTLSRetryBatchResult(
+		[]string{target},
+		tlsretrybatch.StatusStopped,
+		tlsretrybatch.StopInvalidInput,
+		"scripted invalid input",
+	)
+}
+
+func cliTLSRetryBatchResult(
+	targets []string,
+	status tlsretrybatch.Status,
+	reason tlsretrybatch.StopReason,
+	detail string,
+) tlsretrybatch.Result {
+	return tlsretrybatch.Result{
+		SchemaVersion: tlsretrybatch.SchemaVersion,
+		Operation:     tlsretrybatch.Operation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    4,
+		Platform:      cliPlatform(),
+		Input: tlsretrybatch.Input{
+			Targets:              append([]string(nil), targets...),
+			TargetLimit:          4,
+			ConcurrencyLimit:     2,
+			AttemptLimit:         3,
+			RetryLimit:           2,
+			Port:                 tlsobservation.Port,
+			SNIMode:              tlsobservation.SNIOmittedNoHostname,
+			IdentityVerification: tlsobservation.IdentityNotPerformedNoHostname,
+			PerAttemptTimeoutMS:  5000,
+			BackoffMinMS:         100,
+			BackoffMaxMS:         300,
+		},
+		Status:     status,
+		StopReason: reason,
+		Detail:     detail,
+		Targets:    []tlsretrybatch.TargetResult{},
 	}
 }
 

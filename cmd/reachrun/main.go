@@ -22,16 +22,18 @@ import (
 	"github.com/wangjc683/reachrun/internal/probe"
 	"github.com/wangjc683/reachrun/internal/sshobservation"
 	"github.com/wangjc683/reachrun/internal/tlsobservation"
+	"github.com/wangjc683/reachrun/internal/tlsretrybatch"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 	"github.com/wangjc683/reachrun/internal/webpath"
 	"github.com/wangjc683/reachrun/internal/webrecheck"
 )
 
 const (
-	phase0ProbeTimeout        = 5 * time.Second
-	phase0WebPathTimeout      = 15 * time.Second
-	phase0DNSHTTPSPathTimeout = 30 * time.Second
-	phase0WebRecheckTimeout   = 25 * time.Second
+	phase0ProbeTimeout         = 5 * time.Second
+	phase0WebPathTimeout       = 15 * time.Second
+	phase0DNSHTTPSPathTimeout  = 30 * time.Second
+	phase0WebRecheckTimeout    = 25 * time.Second
+	phase0TLSRetryBatchTimeout = 30 * time.Second
 )
 
 const (
@@ -49,6 +51,7 @@ type webPathObserverFactory func(webpath.Config) (webpath.Observer, error)
 type webRecheckObserverFactory func(webrecheck.Config) (webrecheck.Observer, error)
 type sshObserverFactory func(sshobservation.Config) (sshobservation.Observer, error)
 type tlsObserverFactory func(tlsobservation.Config) (tlsobservation.Observer, error)
+type tlsRetryBatchObserverFactory func(tlsretrybatch.Config) (tlsretrybatch.Observer, error)
 type familyConditionObserverFactory func(familycondition.Config) (familycondition.Observer, error)
 
 type dependencies struct {
@@ -61,6 +64,7 @@ type dependencies struct {
 	newWebRecheckObserver      webRecheckObserverFactory
 	newSSHObserver             sshObserverFactory
 	newTLSObserver             tlsObserverFactory
+	newTLSRetryBatchObserver   tlsRetryBatchObserverFactory
 	newFamilyConditionObserver familyConditionObserverFactory
 }
 
@@ -86,6 +90,7 @@ func productionDependencies() dependencies {
 		newWebRecheckObserver:      webrecheck.New,
 		newSSHObserver:             sshobservation.New,
 		newTLSObserver:             tlsobservation.New,
+		newTLSRetryBatchObserver:   tlsretrybatch.New,
 		newFamilyConditionObserver: familycondition.New,
 	}
 }
@@ -175,10 +180,47 @@ func run(
 			return 2
 		}
 		return runTLSObservation(ctx, request, stdout, stderr, deps.newTLSObserver)
+	case "tls-retry-batch":
+		request, ok := parseTLSRetryBatchArgs(args)
+		if !ok {
+			printUsage(stderr)
+			return 2
+		}
+		return runTLSRetryBatch(ctx, request, stdout, stderr, deps.newTLSRetryBatchObserver)
 	default:
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runTLSRetryBatch(
+	ctx context.Context,
+	request tlsretrybatch.Request,
+	stdout io.Writer,
+	stderr io.Writer,
+	newObserver tlsRetryBatchObserverFactory,
+) int {
+	batchContext, cancel := context.WithTimeout(ctx, phase0TLSRetryBatchTimeout)
+	defer cancel()
+
+	observer, err := newObserver(tlsretrybatch.Config{Timeout: phase0TLSRetryBatchTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create TLS retry-batch observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(batchContext, request)
+	if err := tlsretrybatch.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid TLS retry-batch result: %v\n", err)
+		return 1
+	}
+	outcome := probe.OutcomeFailed
+	switch result.Status {
+	case tlsretrybatch.StatusCompleted:
+		outcome = probe.OutcomeSucceeded
+	case tlsretrybatch.StatusCancelled:
+		outcome = probe.OutcomeCancelled
+	}
+	return emitResult(stdout, stderr, result, outcome)
 }
 
 func runFamilyConditions(
@@ -586,6 +628,13 @@ func parseTLSObservationArgs(args []string) (tlsobservation.Request, bool) {
 	return tlsobservation.Request{DialIP: args[1]}, true
 }
 
+func parseTLSRetryBatchArgs(args []string) (tlsretrybatch.Request, bool) {
+	if len(args) != 2 || args[0] != "tls-retry-batch" {
+		return tlsretrybatch.Request{}, false
+	}
+	return tlsretrybatch.Request{Targets: strings.Split(args[1], ",")}, true
+}
+
 func resolverFor(provider string, transport dnsobservation.Transport) (dnsobservation.ResolverID, bool) {
 	switch provider {
 	case "current":
@@ -741,5 +790,6 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  reachrun web-observe <http|https> <hostname> <public-ip>")
 	fmt.Fprintln(output, "  reachrun ssh-observe <public-ip> [port]")
 	fmt.Fprintln(output, "  reachrun tls-observe <public-ip>")
+	fmt.Fprintln(output, "  reachrun tls-retry-batch <public-ip[,public-ip]>")
 	fmt.Fprintln(output, "Phase 0 diagnostic only: each valid command prints one terminal JSON evidence document.")
 }

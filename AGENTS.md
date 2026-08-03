@@ -62,6 +62,7 @@
 | 修改 Web Candidate Recheck、同地址族候选复核或对应 scripted adapter | `GLOSSARY.md`；`docs/architecture/OVERVIEW.md`；目标代码与测试 | 运行命令读 `docs/development/SETUP.md`；语义变化再读 PRD 第 10.3、13.7、16、18–19 节与 ADR 0001 |
 | 修改 SSH Observation、公网目标策略或对应 scripted adapter | `GLOSSARY.md`；`docs/architecture/OVERVIEW.md`；目标代码与测试 | 运行命令读 `docs/development/SETUP.md`；语义变化再读 PRD 第 11、13、16、18–19 节与 ADR 0001 |
 | 修改 TLS Observation、无主要域名服务器 HTTPS 探测或对应 scripted adapter | `GLOSSARY.md`；`docs/architecture/OVERVIEW.md`；目标代码与测试 | 运行命令读 `docs/development/SETUP.md`；语义变化再读 PRD 第 8.3、11.4、13、16、18–19 节与 ADR 0001 |
+| 修改 TLS Retry Batch、受控重试、批次 deadline/取消或对应 scripted adapter | `GLOSSARY.md`；`docs/architecture/OVERVIEW.md`；目标代码与测试 | 运行命令读 `docs/development/SETUP.md`；语义变化再读 PRD 第 9.3、16.3、18–19 节与 ADR 0001 |
 | 本地运行、构建、格式化、测试或 CI | `docs/development/SETUP.md`；目标 workflow/代码 | 只有行为或架构变化时再读对应权威文档 |
 | 测试某项行为 | 对应产品章节、验收条目、目标代码与现有测试 | 跨 module 才读架构文档或 ADR |
 | 整体验收 | PRD 第 21 节及失败条目对应的产品章节 | 性能验收再读第 18 节 |

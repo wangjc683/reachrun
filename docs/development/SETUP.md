@@ -30,6 +30,7 @@ go run ./cmd/reachrun web-observe https one.one.one.one 1.1.1.1
 # Replace YOUR_SERVER_IP with one of your public server addresses.
 go run ./cmd/reachrun ssh-observe YOUR_SERVER_IP 22
 go run ./cmd/reachrun tls-observe YOUR_SERVER_IP
+go run ./cmd/reachrun tls-retry-batch YOUR_SERVER_IP
 ```
 
 每个命令向 stdout 输出一份 terminal JSON evidence：
@@ -44,6 +45,7 @@ go run ./cmd/reachrun tls-observe YOUR_SERVER_IP
 - `web-observe <http|https> <hostname> <public-ip>`：向一个明确候选公网 IP 发起一次第一跳 Web Observation；
 - `ssh-observe <public-ip> [port]`：向一个明确公网 IP 和单个端口发起受限 SSH identification Observation；端口默认 `22`。
 - `tls-observe <public-ip>`：向一个没有 hostname 上下文的明确公网 IP 发起固定 `443` 的有限 TLS Observation。
+- `tls-retry-batch <public-ip[,public-ip]>`：对有界公网 IP 集合执行固定并发、重试、抖动、总 deadline 与取消策略，同时保留每次 TLS Observation。
 
 `transport` 为 `udp`、`tcp` 或 `doh`；`provider` 为 `current`、`cloudflare` 或 `google`；`type` 当前为 `A`、`AAAA`、`CNAME`、`SVCB` 或 `HTTPS`。`current` 只允许 UDP/TCP，并按 inventory 观察顺序选择第一个可拨号的 53 端口 server；它不声称复现平台 split-DNS 选择，也不会向 multicast 或 limited-broadcast 地址发送查询。Cloudflare/Google 是 Phase 0 的固定 reference endpoint，V1 最终组合仍未确定。
 
@@ -61,16 +63,18 @@ go run ./cmd/reachrun tls-observe YOUR_SERVER_IP
 
 `tls-observe` 只接受一个 IPv4/IPv6 公网字面量，固定连接 `443`；不接受 hostname、port、SNI、证书验证开关或 HTTP 参数。它不发送 SNI、不验证信任链/有效期/hostname 身份，也不发送 HTTP。TLS handshake 完成时证书只保存为未验证 evidence；TCP 已建立但 handshake 失败时保留 `unconfirmed_reason`，不把它判为 IP 不可达，也不声称失败一定由缺少 SNI 导致。完整契约见 [TLS Observation seam](../architecture/OVERVIEW.md#12-tls-observation-seam)。
 
+`tls-retry-batch` 最多接受 16 个去重后的公网 IP，并只调度前 4 个，超出数量记录为 `targets_omitted`。固定并发上限为 2；每目标最多 3 次 attempt，每次最多 5 秒，重试前抖动 100–300ms，batch 总 timeout 为 30 秒。只有 TCP timeout/reset，以及 TCP 已连接后的 TLS handshake timeout/reset 会重试；完成握手、连接拒绝、no-route、普通 handshake failure 和取消都不机械重试。每次 attempt 使用全新连接并保留完整 TLS envelope。`status=completed` 只表示有界 schedule 完成，即使目标最终失败也退出 `0`；取消退出 `130`，不会产生 completed batch terminal。完整契约见 [TLS Retry Batch seam](../architecture/OVERVIEW.md#14-tls-retry-batch-seam)。
+
 这些命令是诊断入口，不是 V1 最终的“运行后打开浏览器”体验。
 
 Exit code：
 
-- `0`：probe 成功取得合法证据，或 aggregate/path 报告 `completed`；Address Family Conditions 的明确本机不可用、DNS 的 NXDOMAIN、NODATA、SERVFAIL 等合法响应、DNS HTTPS Path 的 `unsupported_service_mode`、Web Candidate Recheck 中两侧失败但受控尝试已完成、Web 的任意合法 `4xx/5xx` HTTP 响应、SSH 端口可达但 identification 未确认，以及 TLS 的 TCP 已建立但 handshake 未确认，也属于成功观测；
+- `0`：probe 成功取得合法证据，或 aggregate/path/batch 报告 `completed`；Address Family Conditions 的明确本机不可用、DNS 的 NXDOMAIN、NODATA、SERVFAIL 等合法响应、DNS HTTPS Path 的 `unsupported_service_mode`、Web Candidate Recheck 或 TLS Retry Batch 中目标失败但受控 schedule 已完成、Web 的任意合法 `4xx/5xx` HTTP 响应、SSH 端口可达但 identification 未确认，以及 TLS 的 TCP 已建立但 handshake 未确认，也属于成功观测；
 - `1`：probe 的 transport/平台/协议执行失败，任一路径有界停止，或内部结果无法通过 contract 校验；
 - `2`：命令用法错误；
 - `130`：用户取消。
 
-单 probe CLI 意图当前使用 5 秒总 timeout。`web-path` 使用 15 秒路径总 timeout，其中每次解析或 Web attempt 最多 5 秒；`dns-https-path` 使用 30 秒路径总 timeout，其中每次 DNS Observation 最多 5 秒；`web-recheck` 使用 25 秒总 timeout，其中每次候选尝试最多 5 秒。三个 aggregate/path 都不做普通重试，只按各自固定候选、alias/redirect 与 fallback 规则推进。V1 的并发、分阶段 timeout、重试与熔断仍以 PRD 后续实现为准。
+单 probe CLI 意图当前使用 5 秒总 timeout。`web-path` 使用 15 秒路径总 timeout，其中每次解析或 Web attempt 最多 5 秒；`dns-https-path` 使用 30 秒路径总 timeout，其中每次 DNS Observation 最多 5 秒；`web-recheck` 使用 25 秒总 timeout，其中每次候选尝试最多 5 秒。这三个 aggregate/path 不做普通重试，只按各自固定候选、alias/redirect 与 fallback 规则推进；只有 `tls-retry-batch` 执行上文明确的暂态结果重试。V1 的跨协议队列与熔断仍以 PRD 后续实现为准。
 
 地址族检测条件示例：
 
@@ -135,6 +139,14 @@ go run ./cmd/reachrun tls-observe YOUR_SERVER_IP
 
 `tls.status=completed` 只证明该 IP 的 `443` 在不发送 SNI 时完成了 TLS handshake；`input.identity_verification=not_performed_no_hostname` 明确表示证书未验证，不能据此声称网站身份成立。`tls.status=unconfirmed` 仍保留 TCP 已建立事实，后续产品判断可以提示补充主要网站域名，但这份 probe 自身不生成该建议或资产结论。
 
+TLS 重试批次示例：
+
+```bash
+go run ./cmd/reachrun tls-retry-batch YOUR_SERVER_IP,ANOTHER_SERVER_IP
+```
+
+该命令会真实连接参数中的公网 IP，适合手动 Phase 0 Spike。按 `Ctrl-C` 会取消所有在途 TLS attempt 和 backoff wait，输出带 partial evidence 的 `cancelled` report 并退出 `130`；不会据此写入正式资产状态。
+
 ## Verify changes
 
 ```bash
@@ -174,6 +186,6 @@ macOS 和 Windows 的普通构建由 Go 默认选择对应系统 resolver；`GOD
 
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 在 GitHub-hosted macOS、Windows 和 Linux runner 上运行格式检查、`go vet`、全部测试，以及 Address Family Conditions、System Resolution 与 Resolver Inventory 的真实 CLI smoke test。Linux job 统一设置 `-tags=netcgo`。
 
-Address Family Conditions contract test 使用 fake connection 验证零 Write；真实 smoke 只执行 UDP route selection 而不发送 payload。DNS UDP、TCP、DoH、DNS HTTPS 路径、Web、公开 Web 路径、Web 候选复核、SSH 与 TLS contract test 使用进程内受控服务或 scripted adapter，不依赖公共 resolver 或公网站点是否可达。CI 不向 Cloudflare/Google 或示例 Web/SSH/TLS endpoint 发送探测请求，避免把外部网络波动变成构建结果。
+Address Family Conditions contract test 使用 fake connection 验证零 Write；真实 smoke 只执行 UDP route selection 而不发送 payload。DNS UDP、TCP、DoH、DNS HTTPS 路径、Web、公开 Web 路径、Web 候选复核、SSH、TLS 与 TLS Retry Batch contract test 使用进程内受控服务或 scripted adapter，不依赖公共 resolver 或公网站点是否可达。CI 不向 Cloudflare/Google 或示例 Web/SSH/TLS endpoint 发送探测请求，避免把外部网络波动变成构建结果。
 
 CI 证明构建与 contract 在 runner 环境成立，不替代 PRD §19 要求的真实设备 VPN、split DNS、IPv4/IPv6 与平台策略场景验证。
