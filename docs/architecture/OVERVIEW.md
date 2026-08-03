@@ -8,7 +8,7 @@
 
 ## 1. 当前实现范围
 
-仓库目前实现了 Phase 0 的前十条垂直切片：
+仓库目前实现了 Phase 0 的前十一条垂直切片：
 
 1. 通过操作系统普通 hostname 路径取得 **System Resolution**；
 2. 分别取得 **Resolver Inventory**，以及对明确 resolver 发起 UDP、TCP 或 DoH **DNS Observation**；
@@ -19,9 +19,10 @@
 7. 从 hostname 出发，以系统解析、公网候选、HTTPS 优先、受限 HTTP fallback 与安全重定向编排一次 **Public Web Path**，同时保留每一跳的原始解析与 Web 证据；
 8. 对同一 hostname 的本地与参考候选集合执行同地址族 **Web Candidate Recheck**，固定第一跳 HTTPS 条件并确保每个候选使用全新连接，只保留可比较证据而不产生 DNS 归因；
 9. 在不发送网络载荷的前提下，通过内核 UDP route selection 分别取得 IPv4/IPv6 **Address Family Conditions**，区分已选路与明确的本机检测条件不可用；
-10. 对有界公网 IP 集合执行并发受限的 **TLS Retry Batch**，只重试明确的暂态 TCP/TLS 结果，保留每次 TLS Observation，并验证 batch deadline 与取消传播。
+10. 对有界公网 IP 集合执行并发受限的 **TLS Retry Batch**，只重试明确的暂态 TCP/TLS 结果，保留每次 TLS Observation，并验证 batch deadline 与取消传播；
+11. 通过只监听字面量 `127.0.0.1` 的 **Browser Placeholder** 验证三平台 BrowserOpener 与终端 URL fallback；打开命令失败不会关闭占位页，只有精确页面请求、超时或取消才结束报告。
 
-临时 CLI 为每次调用输出一份版本化 JSON **探测证据或路径报告**。它们用于验证跨平台网络能力，不是 V1 浏览器应用，也不包含资产、批次、判断或持久化模型。
+临时 CLI 为每次调用输出一份版本化 JSON **探测证据、路径报告或平台能力报告**。它们用于验证跨平台网络能力，不是 V1 浏览器应用，也不包含资产、正式批次、判断或持久化模型。
 
 产品范围以 [`PRD.md`](../product/PRD.md) 为准，跨平台 Go 方案及理由以 [ADR 0001](../decisions/0001-cross-platform-go-local-web-architecture.md) 为准。本文件只描述已经存在的实现。
 
@@ -48,8 +49,13 @@ cmd/reachrun
     │        └── Go net
     ├── internal/tlsobservation
     │        └── Go net + crypto/tls
-    └── internal/tlsretrybatch
-             └── internal/tlsobservation
+    ├── internal/tlsretrybatch
+    │        └── internal/tlsobservation
+    └── internal/browserplaceholder
+             └── internal/platform/browseropener
+                      ├── macOS /usr/bin/open
+                      ├── Linux xdg-open
+                      └── Windows ShellExecuteW
 
 Public Web Path、Web Candidate Recheck、Web、SSH 与 TLS Observation
     └── internal/nettarget
@@ -78,6 +84,8 @@ Windows resolver inventory
 | `internal/sshobservation` | 对一个候选公网 IP 与单个 SSH 端口执行 TCP 建连和受限 identification 交换，不进入密钥交换或认证 |
 | `internal/tlsobservation` | 对没有 hostname 的一个候选公网 IP 固定执行 `443` TCP/TLS 观测；不发送 SNI、不验证证书身份、不发送 HTTP，并把握手完成或未确认保留为 TCP 建立后的 evidence |
 | `internal/tlsretrybatch` | 对 caller 明确提供的公网 IP 集合执行固定并发、attempt、抖动、总 deadline 与取消策略；保留每次 TLS Observation，不产生资产判断 |
+| `internal/browserplaceholder` | 运行一个有界、一次性的 Phase 0 loopback 占位页；隐藏固定监听、严格 HTTP 请求、BrowserOpener、即时 fallback、页面请求证据、关闭与取消，不是正式本地应用服务器 |
+| `internal/platform/browseropener` | 只接受规范化的字面量 `127.0.0.1` HTTP URL，并通过 macOS `/usr/bin/open`、Linux `xdg-open` 或 Windows `ShellExecuteW` 请求默认浏览器；不经过 shell，失败保留稳定类别供 fallback 使用 |
 | `internal/nettarget` | 规范化 Web DNS hostname、受限 origin-form request-target 与单个公网字面量 IP，并集中拒绝 loopback、私网、链路本地、组播、文档/benchmark 保留等产品禁止地址 |
 | 各 `*test` 子包 | 给调用方测试使用的有限队列 adapter；精确返回 fixture、记录调用，队列耗尽时 panic |
 
@@ -364,11 +372,36 @@ TLS handshake 完成、连接拒绝、no-route、取消、普通 handshake failu
 
 用户取消会同时传播到所有在途 TLS attempt 和 backoff wait；尚未开始的目标保持 `not_started`，已有合法 partial evidence 的目标为 `interrupted`，aggregate 不再产生 `completed` terminal。batch deadline、嵌套证据契约损坏与 scheduler failure 分别保留稳定 stop reason。这个 Phase 0 seam 只证明最小重试/取消机制，不是正式 `checkrun`、资产批次或持久化提交边界。
 
-## 15. CLI 组合与安全选择
+## 15. Browser Placeholder and BrowserOpener seam
+
+临时占位页调用方只依赖：
+
+```go
+type Runner interface {
+    Run(ctx context.Context, notifyFallback FallbackNotifier) Result
+}
+```
+
+`internal/browserplaceholder` 固定监听 `tcp4/127.0.0.1:0`，生成 `http://127.0.0.1:<port>/`，再调用 `internal/platform/browseropener`。调用方不能提供 URL、监听地址、path、浏览器程序或参数。占位页只接受精确 Host、`GET /` 且无 query 的请求，并返回静态 HTML、`Cache-Control: no-store`、严格 CSP、`Referrer-Policy: no-referrer` 与 `X-Content-Type-Options: nosniff`；其他 Host、method 或 path 不会完成 run。
+
+BrowserOpener 外部 seam 只有：
+
+```go
+type Opener interface {
+    Open(ctx context.Context, rawURL string) Result
+}
+```
+
+adapter 再次拒绝非 `http`、非字面量 `127.0.0.1`、缺少规范端口或带 userinfo 的 URL。macOS 以固定 `/usr/bin/open <url>` 执行；Linux 以不经过 shell 的 `xdg-open <url>` 执行；Windows 直接调用 `ShellExecuteW("open", url)`。opener attempt 最多 5 秒，超时成为可 fallback 的 `launch_timeout`；用户取消仍保持 `cancelled`。`opened` 只表示平台启动机制接受了请求，不证明浏览器已经取得页面；最终报告把 opener attempt 与独立观察到的精确 HTTP page request 分开保存，不作因果声明。
+
+若 opener 返回稳定的 `command_unavailable`、`launch_timeout`、`launch_failed` 或 `unsupported_platform`，runner 会立即调用 fallback notifier；CLI 此时打印可复制 URL，但继续保持占位页可访问。fallback URL 被请求后 run 仍可 `completed`，证明降级路径可用，而不是把浏览器启动失败当成整个 Spike 失败。60 秒内没有合法页面请求则 `placeholder_timeout`；用户取消会关闭 listener、压过迟到请求并退出 `130`。这个 module 不生成会话 token、API、heartbeat、静态 UI bundle 或正式应用生命周期，后续完整能力仍由 `localhost` module 承担。
+
+## 16. CLI 组合与安全选择
 
 当前诊断入口：
 
 ```text
+reachrun browser-placeholder
 reachrun family-conditions
 reachrun resolve <hostname>
 reachrun resolver-inventory
@@ -382,7 +415,9 @@ reachrun tls-observe <public-ip>
 reachrun tls-retry-batch <public-ip[,public-ip]>
 ```
 
-每个合法命令只向 stdout 输出一份 terminal evidence document。probe envelope 成功或任一路径/批次报告 `completed` 退出 `0`，probe failure 或路径/批次 `stopped` 退出 `1`，用法错误退出 `2`，取消退出 `130`。Address Family Conditions 的明确本机不可用、NXDOMAIN、NODATA 或 SERVFAIL 等合法 DNS 响应、`unsupported_service_mode` 已完成兼容性观测、任意 `4xx/5xx` 已收到合法 HTTP 响应、SSH 端口可达但 identification 未确认、TLS 的 TCP 已连接但 handshake 未确认，以及 TLS Retry Batch 中所有目标按固定策略完成但仍失败，都是成功取得的 evidence，因此都退出 `0`。
+每个合法命令只向 stdout 输出一份 terminal evidence document。probe envelope 成功或任一路径/批次/占位页报告 `completed` 退出 `0`，probe failure 或路径/批次/占位页 `stopped` 退出 `1`，用法错误退出 `2`，取消退出 `130`。Address Family Conditions 的明确本机不可用、NXDOMAIN、NODATA 或 SERVFAIL 等合法 DNS 响应、`unsupported_service_mode` 已完成兼容性观测、任意 `4xx/5xx` 已收到合法 HTTP 响应、SSH 端口可达但 identification 未确认、TLS 的 TCP 已连接但 handshake 未确认、TLS Retry Batch 中所有目标按固定策略完成但仍失败，以及 BrowserOpener 失败后 fallback 页面成功访问，都是成功取得的 evidence，因此都退出 `0`。
+
+`browser-placeholder` 不接受参数，执行第 15 节的一次性占位页。浏览器启动成功时通常由浏览器请求页面后自动结束；启动失败时 stderr 立即显示 fallback URL，进程继续服务直到该 URL 被访问、60 秒超时或用户取消。CI 只运行受控 listener/opener contract，不真实打开 runner 浏览器。
 
 `family-conditions` 不接受参数，执行第 13 节的固定双栈本机条件观察。它不发送 UDP payload；`unavailable/no_route` 只表示当前内核没有为该固定公网文字地址选出 route，不等于任意 IPv6 目标或资产异常。
 
@@ -404,8 +439,8 @@ reachrun tls-retry-batch <public-ip[,public-ip]>
 
 `tls-retry-batch` 用一个逗号分隔参数接受明确公网 IP，执行第 14 节固定策略。它不会因某个目标最终失败而返回 `stopped`；只有 batch deadline、内部 evidence/scheduler 契约失败才退出 `1`，用户取消退出 `130`。该命令会真实连接最多 4 个明确目标，不是默认日常检测入口。
 
-## 16. 当前边界与下一次扩展
+## 17. 当前边界与下一次扩展
 
-尚不存在的能力包括把系统解析和两个独立参考解析自动接入候选复核并排除 CDN/GeoDNS 合法差异、把 Address Family Conditions 与各目标 probe 组合为中性 assessment、跨协议快速/深度队列与正式资产批次、snapshot、本地 HTTP 与 React UI。它们出现时应各自放入足够深的 module 或未来 `checkrun` implementation，不得给现有单次 probe 或四个 aggregate interface 增加无关方法，也不得建立巨型 `Platform` interface。
+尚不存在的能力包括把系统解析和两个独立参考解析自动接入候选复核并排除 CDN/GeoDNS 合法差异、把 Address Family Conditions 与各目标 probe 组合为中性 assessment、跨协议快速/深度队列与正式资产批次、snapshot、带 token/API/heartbeat/静态资源的正式本地 HTTP，以及 React UI。它们出现时应各自放入足够深的 module 或未来 `checkrun`/`localhost` implementation，不得给现有单次 probe、aggregate 或临时 browser-placeholder interface 增加无关方法，也不得建立巨型 `Platform` interface。
 
 System Resolution、Resolver Inventory、Address Family Conditions、DNS Observation、Web Observation、SSH Observation 与 TLS Observation 必须继续保持各自的证据契约。DNS HTTPS Path、Web Path、Web Candidate Recheck 和 TLS Retry Batch 只在各自独立 aggregate 中引用完整的底层结果，不把它们合并成一种模糊事件。任何一个单独失败、差异或超时都不能直接产生“DNS 污染”“被墙”或其他因果结论。

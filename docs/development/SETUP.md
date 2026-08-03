@@ -18,6 +18,7 @@ Go 会通过 `go.mod` 自动取得固定版本的 `golang.org/x/net` 和 `golang
 ```bash
 git clone https://github.com/wangjc683/reachrun.git
 cd reachrun
+go run ./cmd/reachrun browser-placeholder
 go run ./cmd/reachrun family-conditions
 go run ./cmd/reachrun resolve localhost
 go run ./cmd/reachrun resolver-inventory
@@ -35,6 +36,7 @@ go run ./cmd/reachrun tls-retry-batch YOUR_SERVER_IP
 
 每个命令向 stdout 输出一份 terminal JSON evidence：
 
+- `browser-placeholder`：只监听随机 `127.0.0.1` 端口，以一次性占位页验证默认浏览器与终端 URL fallback；
 - `family-conditions`：在不发送 payload 的前提下观察当前本机 IPv4/IPv6 内核选路条件；
 - `resolve <hostname>`：操作系统普通 hostname 路径返回的 System Resolution；
 - `resolver-inventory`：当前可观察到的 resolver 配置候选；
@@ -48,6 +50,8 @@ go run ./cmd/reachrun tls-retry-batch YOUR_SERVER_IP
 - `tls-retry-batch <public-ip[,public-ip]>`：对有界公网 IP 集合执行固定并发、重试、抖动、总 deadline 与取消策略，同时保留每次 TLS Observation。
 
 `transport` 为 `udp`、`tcp` 或 `doh`；`provider` 为 `current`、`cloudflare` 或 `google`；`type` 当前为 `A`、`AAAA`、`CNAME`、`SVCB` 或 `HTTPS`。`current` 只允许 UDP/TCP，并按 inventory 观察顺序选择第一个可拨号的 53 端口 server；它不声称复现平台 split-DNS 选择，也不会向 multicast 或 limited-broadcast 地址发送查询。Cloudflare/Google 是 Phase 0 的固定 reference endpoint，V1 最终组合仍未确定。
+
+`browser-placeholder` 不接受参数，固定监听 `tcp4/127.0.0.1:0`，只接受生成 URL 对应的精确 Host 与 `GET /`，并设置 no-store、严格 CSP、no-referrer 和 nosniff 响应头。macOS 使用固定 `/usr/bin/open`，Linux 使用不经过 shell 的 `xdg-open`，Windows 使用 `ShellExecuteW`；adapter 会再次拒绝非字面量 `127.0.0.1` 的 URL。opener attempt 最多 5 秒；command unavailable、launch timeout/failure 或 unsupported platform 都进入 fallback，用户取消则保持 `cancelled`。平台启动机制成功不等于浏览器已经加载页面，报告会独立保留 opener attempt 和实际 page request。打开失败时 stderr 立即打印 fallback URL，listener 继续存活；访问该 URL 后仍以 `completed`/`0` 结束。合法页面 60 秒内未访问则 `placeholder_timeout`/`1`，`Ctrl-C` 会关闭 listener 并退出 `130`。完整契约见 [Browser Placeholder and BrowserOpener seam](../architecture/OVERVIEW.md#15-browser-placeholder-and-browseropener-seam)。
 
 `family-conditions` 不接受参数，固定按 IPv4、IPv6 顺序对两个公网文字地址执行 UDP connect，只让内核选择 route/source address，从不写入载荷。`route_selected` 不证明 payload 送达或 endpoint 响应；`unavailable/no_route`、`address_family_unsupported`、`source_address_unavailable` 或 `network_down` 是成功取得的本机条件证据，不是目标资产失败。完整契约见 [Address Family Conditions seam](../architecture/OVERVIEW.md#13-address-family-conditions-seam)。
 
@@ -69,12 +73,20 @@ go run ./cmd/reachrun tls-retry-batch YOUR_SERVER_IP
 
 Exit code：
 
-- `0`：probe 成功取得合法证据，或 aggregate/path/batch 报告 `completed`；Address Family Conditions 的明确本机不可用、DNS 的 NXDOMAIN、NODATA、SERVFAIL 等合法响应、DNS HTTPS Path 的 `unsupported_service_mode`、Web Candidate Recheck 或 TLS Retry Batch 中目标失败但受控 schedule 已完成、Web 的任意合法 `4xx/5xx` HTTP 响应、SSH 端口可达但 identification 未确认，以及 TLS 的 TCP 已建立但 handshake 未确认，也属于成功观测；
+- `0`：probe 成功取得合法证据，或 aggregate/path/batch/placeholder 报告 `completed`；BrowserOpener 失败后 fallback URL 被访问、Address Family Conditions 的明确本机不可用、DNS 的 NXDOMAIN、NODATA、SERVFAIL 等合法响应、DNS HTTPS Path 的 `unsupported_service_mode`、Web Candidate Recheck 或 TLS Retry Batch 中目标失败但受控 schedule 已完成、Web 的任意合法 `4xx/5xx` HTTP 响应、SSH 端口可达但 identification 未确认，以及 TLS 的 TCP 已建立但 handshake 未确认，也属于成功观测；
 - `1`：probe 的 transport/平台/协议执行失败，任一路径有界停止，或内部结果无法通过 contract 校验；
 - `2`：命令用法错误；
 - `130`：用户取消。
 
-单 probe CLI 意图当前使用 5 秒总 timeout。`web-path` 使用 15 秒路径总 timeout，其中每次解析或 Web attempt 最多 5 秒；`dns-https-path` 使用 30 秒路径总 timeout，其中每次 DNS Observation 最多 5 秒；`web-recheck` 使用 25 秒总 timeout，其中每次候选尝试最多 5 秒。这三个 aggregate/path 不做普通重试，只按各自固定候选、alias/redirect 与 fallback 规则推进；只有 `tls-retry-batch` 执行上文明确的暂态结果重试。V1 的跨协议队列与熔断仍以 PRD 后续实现为准。
+单 probe CLI 意图当前使用 5 秒总 timeout。`web-path` 使用 15 秒路径总 timeout，其中每次解析或 Web attempt 最多 5 秒；`dns-https-path` 使用 30 秒路径总 timeout，其中每次 DNS Observation 最多 5 秒；`web-recheck` 使用 25 秒总 timeout，其中每次候选尝试最多 5 秒；`browser-placeholder` 等待页面请求最多 60 秒。这三个 aggregate/path 不做普通重试，只按各自固定候选、alias/redirect 与 fallback 规则推进；只有 `tls-retry-batch` 执行上文明确的暂态结果重试。V1 的跨协议队列与熔断仍以 PRD 后续实现为准。
+
+浏览器占位页示例：
+
+```bash
+go run ./cmd/reachrun browser-placeholder
+```
+
+正常情况下默认浏览器打开占位页后命令自动结束。若系统 opener 不可用，复制 stderr 中的 `http://127.0.0.1:<port>/` 到浏览器；页面成功取得后 terminal JSON 会同时保留失败的 open attempt 与成功的 page request。这是 Phase 0 手工能力验证，不是正式 UI 或后台常驻服务。
 
 地址族检测条件示例：
 
@@ -186,6 +198,6 @@ macOS 和 Windows 的普通构建由 Go 默认选择对应系统 resolver；`GOD
 
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 在 GitHub-hosted macOS、Windows 和 Linux runner 上运行格式检查、`go vet`、全部测试，以及 Address Family Conditions、System Resolution 与 Resolver Inventory 的真实 CLI smoke test。Linux job 统一设置 `-tags=netcgo`。
 
-Address Family Conditions contract test 使用 fake connection 验证零 Write；真实 smoke 只执行 UDP route selection 而不发送 payload。DNS UDP、TCP、DoH、DNS HTTPS 路径、Web、公开 Web 路径、Web 候选复核、SSH、TLS 与 TLS Retry Batch contract test 使用进程内受控服务或 scripted adapter，不依赖公共 resolver 或公网站点是否可达。CI 不向 Cloudflare/Google 或示例 Web/SSH/TLS endpoint 发送探测请求，避免把外部网络波动变成构建结果。
+Browser Placeholder contract test 使用真实 `127.0.0.1` 临时 listener 与 scripted opener 验证精确 HTTP 请求、fallback、timeout、取消和关闭；CI 不真实打开 runner 的浏览器。Address Family Conditions contract test 使用 fake connection 验证零 Write；真实 smoke 只执行 UDP route selection 而不发送 payload。DNS UDP、TCP、DoH、DNS HTTPS 路径、Web、公开 Web 路径、Web 候选复核、SSH、TLS 与 TLS Retry Batch contract test 使用进程内受控服务或 scripted adapter，不依赖公共 resolver 或公网站点是否可达。CI 不向 Cloudflare/Google 或示例 Web/SSH/TLS endpoint 发送探测请求，避免把外部网络波动变成构建结果。
 
 CI 证明构建与 contract 在 runner 环境成立，不替代 PRD §19 要求的真实设备 VPN、split DNS、IPv4/IPv6 与平台策略场景验证。

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wangjc683/reachrun/internal/browserplaceholder"
 	"github.com/wangjc683/reachrun/internal/dnshttpspath"
 	"github.com/wangjc683/reachrun/internal/dnsobservation"
 	"github.com/wangjc683/reachrun/internal/platform/familycondition"
@@ -29,11 +30,12 @@ import (
 )
 
 const (
-	phase0ProbeTimeout         = 5 * time.Second
-	phase0WebPathTimeout       = 15 * time.Second
-	phase0DNSHTTPSPathTimeout  = 30 * time.Second
-	phase0WebRecheckTimeout    = 25 * time.Second
-	phase0TLSRetryBatchTimeout = 30 * time.Second
+	phase0ProbeTimeout              = 5 * time.Second
+	phase0WebPathTimeout            = 15 * time.Second
+	phase0DNSHTTPSPathTimeout       = 30 * time.Second
+	phase0WebRecheckTimeout         = 25 * time.Second
+	phase0TLSRetryBatchTimeout      = 30 * time.Second
+	phase0BrowserPlaceholderTimeout = 60 * time.Second
 )
 
 const (
@@ -53,19 +55,21 @@ type sshObserverFactory func(sshobservation.Config) (sshobservation.Observer, er
 type tlsObserverFactory func(tlsobservation.Config) (tlsobservation.Observer, error)
 type tlsRetryBatchObserverFactory func(tlsretrybatch.Config) (tlsretrybatch.Observer, error)
 type familyConditionObserverFactory func(familycondition.Config) (familycondition.Observer, error)
+type browserPlaceholderRunnerFactory func(browserplaceholder.Config) (browserplaceholder.Runner, error)
 
 type dependencies struct {
-	systemResolver             systemresolver.Resolver
-	resolverInventory          resolverinventory.Observer
-	newDNSObserver             dnsObserverFactory
-	newDNSHTTPSPathObserver    dnsHTTPSPathObserverFactory
-	newWebObserver             webObserverFactory
-	newWebPathObserver         webPathObserverFactory
-	newWebRecheckObserver      webRecheckObserverFactory
-	newSSHObserver             sshObserverFactory
-	newTLSObserver             tlsObserverFactory
-	newTLSRetryBatchObserver   tlsRetryBatchObserverFactory
-	newFamilyConditionObserver familyConditionObserverFactory
+	systemResolver              systemresolver.Resolver
+	resolverInventory           resolverinventory.Observer
+	newDNSObserver              dnsObserverFactory
+	newDNSHTTPSPathObserver     dnsHTTPSPathObserverFactory
+	newWebObserver              webObserverFactory
+	newWebPathObserver          webPathObserverFactory
+	newWebRecheckObserver       webRecheckObserverFactory
+	newSSHObserver              sshObserverFactory
+	newTLSObserver              tlsObserverFactory
+	newTLSRetryBatchObserver    tlsRetryBatchObserverFactory
+	newFamilyConditionObserver  familyConditionObserverFactory
+	newBrowserPlaceholderRunner browserPlaceholderRunnerFactory
 }
 
 func main() {
@@ -81,17 +85,18 @@ func mainExitCode() int {
 
 func productionDependencies() dependencies {
 	return dependencies{
-		systemResolver:             systemresolver.New(),
-		resolverInventory:          resolverinventory.New(),
-		newDNSObserver:             dnsobservation.New,
-		newDNSHTTPSPathObserver:    dnshttpspath.New,
-		newWebObserver:             webobservation.New,
-		newWebPathObserver:         webpath.New,
-		newWebRecheckObserver:      webrecheck.New,
-		newSSHObserver:             sshobservation.New,
-		newTLSObserver:             tlsobservation.New,
-		newTLSRetryBatchObserver:   tlsretrybatch.New,
-		newFamilyConditionObserver: familycondition.New,
+		systemResolver:              systemresolver.New(),
+		resolverInventory:           resolverinventory.New(),
+		newDNSObserver:              dnsobservation.New,
+		newDNSHTTPSPathObserver:     dnshttpspath.New,
+		newWebObserver:              webobservation.New,
+		newWebPathObserver:          webpath.New,
+		newWebRecheckObserver:       webrecheck.New,
+		newSSHObserver:              sshobservation.New,
+		newTLSObserver:              tlsobservation.New,
+		newTLSRetryBatchObserver:    tlsretrybatch.New,
+		newFamilyConditionObserver:  familycondition.New,
+		newBrowserPlaceholderRunner: browserplaceholder.New,
 	}
 }
 
@@ -108,6 +113,12 @@ func run(
 	}
 
 	switch args[0] {
+	case "browser-placeholder":
+		if len(args) != 1 {
+			printUsage(stderr)
+			return 2
+		}
+		return runBrowserPlaceholder(ctx, stdout, stderr, deps.newBrowserPlaceholderRunner)
 	case "family-conditions":
 		if len(args) != 1 {
 			printUsage(stderr)
@@ -191,6 +202,43 @@ func run(
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runBrowserPlaceholder(
+	ctx context.Context,
+	stdout io.Writer,
+	stderr io.Writer,
+	newRunner browserPlaceholderRunnerFactory,
+) int {
+	runContext, cancel := context.WithTimeout(ctx, phase0BrowserPlaceholderTimeout)
+	defer cancel()
+
+	runner, err := newRunner(browserplaceholder.Config{Timeout: phase0BrowserPlaceholderTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create browser-placeholder runner: %v\n", err)
+		return 1
+	}
+	result := runner.Run(runContext, func(fallback browserplaceholder.Fallback) error {
+		_, err := fmt.Fprintf(
+			stderr,
+			"reachrun: default browser did not open (%s); open %s\n",
+			fallback.Failure.Code,
+			fallback.URL,
+		)
+		return err
+	})
+	if err := browserplaceholder.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid browser-placeholder result: %v\n", err)
+		return 1
+	}
+	outcome := probe.OutcomeFailed
+	switch result.Status {
+	case browserplaceholder.StatusCompleted:
+		outcome = probe.OutcomeSucceeded
+	case browserplaceholder.StatusCancelled:
+		outcome = probe.OutcomeCancelled
+	}
+	return emitResult(stdout, stderr, result, outcome)
 }
 
 func runTLSRetryBatch(
@@ -780,6 +828,7 @@ func emitResult(
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "Usage:")
+	fmt.Fprintln(output, "  reachrun browser-placeholder")
 	fmt.Fprintln(output, "  reachrun family-conditions")
 	fmt.Fprintln(output, "  reachrun resolve <hostname>")
 	fmt.Fprintln(output, "  reachrun resolver-inventory")

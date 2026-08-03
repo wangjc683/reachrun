@@ -12,10 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wangjc683/reachrun/internal/browserplaceholder"
+	"github.com/wangjc683/reachrun/internal/browserplaceholder/browserplaceholdertest"
 	"github.com/wangjc683/reachrun/internal/dnshttpspath"
 	"github.com/wangjc683/reachrun/internal/dnshttpspath/dnshttpspathtest"
 	"github.com/wangjc683/reachrun/internal/dnsobservation"
 	"github.com/wangjc683/reachrun/internal/dnsobservation/dnsobservationtest"
+	"github.com/wangjc683/reachrun/internal/platform/browseropener"
 	"github.com/wangjc683/reachrun/internal/platform/familycondition"
 	"github.com/wangjc683/reachrun/internal/platform/familycondition/familyconditiontest"
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory"
@@ -36,6 +39,99 @@ import (
 	"github.com/wangjc683/reachrun/internal/webrecheck"
 	"github.com/wangjc683/reachrun/internal/webrecheck/webrechecktest"
 )
+
+func TestRunBrowserPlaceholderMapsTerminalReportsAndFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		step         browserplaceholdertest.Step
+		code         int
+		wantFallback bool
+	}{
+		"browser command and page request completed": {
+			step: browserplaceholdertest.Step{Result: cliBrowserPlaceholderCompletedResult(false)},
+			code: 0,
+		},
+		"terminal fallback and page request completed": {
+			step: browserplaceholdertest.Step{
+				Fallback: cliBrowserPlaceholderFallback(),
+				Result:   cliBrowserPlaceholderCompletedResult(true),
+			},
+			code:         0,
+			wantFallback: true,
+		},
+		"placeholder timeout": {
+			step: browserplaceholdertest.Step{Result: cliBrowserPlaceholderStoppedResult()},
+			code: 1,
+		},
+		"cancelled": {
+			step: browserplaceholdertest.Step{Result: cliBrowserPlaceholderCancelledResult()},
+			code: 130,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			runner := browserplaceholdertest.New(test.step)
+			factory := &scriptedBrowserPlaceholderFactory{runner: runner}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run(
+				context.Background(),
+				[]string{"browser-placeholder"},
+				&stdout,
+				&stderr,
+				dependencies{newBrowserPlaceholderRunner: factory.New},
+			)
+			if code != test.code {
+				t.Fatalf("run() = %d, want %d", code, test.code)
+			}
+			if test.wantFallback {
+				if !strings.Contains(stderr.String(), "default browser did not open (launch_failed)") ||
+					!strings.Contains(stderr.String(), cliBrowserPlaceholderURL) {
+					t.Fatalf("stderr = %q, want fallback URL", stderr.String())
+				}
+			} else if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			decoded := decodeOneJSON[browserplaceholder.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.step.Result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.step.Result)
+			}
+			if runner.Calls() != 1 || runner.Remaining() != 0 {
+				t.Fatalf("runner calls/remaining = %d/%d, want 1/0", runner.Calls(), runner.Remaining())
+			}
+			if config := factory.singleConfig(t); config.Timeout != phase0BrowserPlaceholderTimeout {
+				t.Fatalf("browser-placeholder timeout = %s, want %s", config.Timeout, phase0BrowserPlaceholderTimeout)
+			}
+		})
+	}
+}
+
+func TestRunReportsBrowserPlaceholderFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedBrowserPlaceholderFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"browser-placeholder"},
+		&stdout,
+		&stderr,
+		dependencies{newBrowserPlaceholderRunner: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run/stdout = %d/%q, want 1/empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create browser-placeholder runner: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0BrowserPlaceholderTimeout {
+		t.Fatalf("browser-placeholder timeout = %s, want %s", config.Timeout, phase0BrowserPlaceholderTimeout)
+	}
+}
 
 func TestRunFamilyConditionsPrintsOneEnvelopeAndReturnsOutcomeExitCode(t *testing.T) {
 	t.Parallel()
@@ -1635,39 +1731,40 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string][]string{
-		"empty":                            nil,
-		"family conditions extra argument": {"family-conditions", "extra"},
-		"resolve missing hostname":         {"resolve"},
-		"resolve extra argument":           {"resolve", "example.com", "extra"},
-		"inventory extra argument":         {"resolver-inventory", "extra"},
-		"DNS missing argument":             {"dns-observe", "udp", "cloudflare", "A"},
-		"DNS extra argument":               {"dns-observe", "udp", "cloudflare", "A", "example.com", "extra"},
-		"unknown command":                  {"inspect"},
-		"unknown transport":                {"dns-observe", "UDP", "cloudflare", "A", "example.com"},
-		"unknown provider":                 {"dns-observe", "udp", "quad9", "A", "example.com"},
-		"lowercase query type":             {"dns-observe", "udp", "cloudflare", "a", "example.com"},
-		"current does not support DoH":     {"dns-observe", "doh", "current", "A", "example.com"},
-		"DNS HTTPS path missing hostname":  {"dns-https-path", "udp", "cloudflare"},
-		"DNS HTTPS path extra argument":    {"dns-https-path", "udp", "cloudflare", "example.com", "extra"},
-		"DNS HTTPS path unknown transport": {"dns-https-path", "UDP", "cloudflare", "example.com"},
-		"DNS HTTPS path unknown provider":  {"dns-https-path", "udp", "quad9", "example.com"},
-		"DNS HTTPS path current DoH":       {"dns-https-path", "doh", "current", "example.com"},
-		"Web missing argument":             {"web-observe", "https", "example.com"},
-		"Web extra argument":               {"web-observe", "https", "example.com", "93.184.216.34", "extra"},
-		"unknown Web scheme":               {"web-observe", "HTTPS", "example.com", "93.184.216.34"},
-		"Web path missing hostname":        {"web-path"},
-		"Web path extra argument":          {"web-path", "example.com", "extra"},
-		"Web recheck missing candidates":   {"web-recheck", "example.com", "8.8.8.8"},
-		"Web recheck extra argument":       {"web-recheck", "example.com", "8.8.8.8", "1.1.1.1", "extra"},
-		"SSH missing IP":                   {"ssh-observe"},
-		"SSH extra argument":               {"ssh-observe", "93.184.216.34", "22", "extra"},
-		"SSH nonnumeric port":              {"ssh-observe", "93.184.216.34", "ssh"},
-		"SSH zero port":                    {"ssh-observe", "93.184.216.34", "0"},
-		"SSH oversized port":               {"ssh-observe", "93.184.216.34", "65536"},
-		"TLS missing IP":                   {"tls-observe"},
-		"TLS extra argument":               {"tls-observe", "93.184.216.34", "extra"},
-		"TLS retry batch missing targets":  {"tls-retry-batch"},
-		"TLS retry batch extra argument":   {"tls-retry-batch", "8.8.8.8", "extra"},
+		"empty":                              nil,
+		"browser placeholder extra argument": {"browser-placeholder", "extra"},
+		"family conditions extra argument":   {"family-conditions", "extra"},
+		"resolve missing hostname":           {"resolve"},
+		"resolve extra argument":             {"resolve", "example.com", "extra"},
+		"inventory extra argument":           {"resolver-inventory", "extra"},
+		"DNS missing argument":               {"dns-observe", "udp", "cloudflare", "A"},
+		"DNS extra argument":                 {"dns-observe", "udp", "cloudflare", "A", "example.com", "extra"},
+		"unknown command":                    {"inspect"},
+		"unknown transport":                  {"dns-observe", "UDP", "cloudflare", "A", "example.com"},
+		"unknown provider":                   {"dns-observe", "udp", "quad9", "A", "example.com"},
+		"lowercase query type":               {"dns-observe", "udp", "cloudflare", "a", "example.com"},
+		"current does not support DoH":       {"dns-observe", "doh", "current", "A", "example.com"},
+		"DNS HTTPS path missing hostname":    {"dns-https-path", "udp", "cloudflare"},
+		"DNS HTTPS path extra argument":      {"dns-https-path", "udp", "cloudflare", "example.com", "extra"},
+		"DNS HTTPS path unknown transport":   {"dns-https-path", "UDP", "cloudflare", "example.com"},
+		"DNS HTTPS path unknown provider":    {"dns-https-path", "udp", "quad9", "example.com"},
+		"DNS HTTPS path current DoH":         {"dns-https-path", "doh", "current", "example.com"},
+		"Web missing argument":               {"web-observe", "https", "example.com"},
+		"Web extra argument":                 {"web-observe", "https", "example.com", "93.184.216.34", "extra"},
+		"unknown Web scheme":                 {"web-observe", "HTTPS", "example.com", "93.184.216.34"},
+		"Web path missing hostname":          {"web-path"},
+		"Web path extra argument":            {"web-path", "example.com", "extra"},
+		"Web recheck missing candidates":     {"web-recheck", "example.com", "8.8.8.8"},
+		"Web recheck extra argument":         {"web-recheck", "example.com", "8.8.8.8", "1.1.1.1", "extra"},
+		"SSH missing IP":                     {"ssh-observe"},
+		"SSH extra argument":                 {"ssh-observe", "93.184.216.34", "22", "extra"},
+		"SSH nonnumeric port":                {"ssh-observe", "93.184.216.34", "ssh"},
+		"SSH zero port":                      {"ssh-observe", "93.184.216.34", "0"},
+		"SSH oversized port":                 {"ssh-observe", "93.184.216.34", "65536"},
+		"TLS missing IP":                     {"tls-observe"},
+		"TLS extra argument":                 {"tls-observe", "93.184.216.34", "extra"},
+		"TLS retry batch missing targets":    {"tls-retry-batch"},
+		"TLS retry batch extra argument":     {"tls-retry-batch", "8.8.8.8", "extra"},
 	}
 
 	for name, args := range tests {
@@ -1684,6 +1781,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			tlsFactory := &scriptedTLSFactory{observer: tlsobservationtest.New()}
 			tlsRetryBatchFactory := &scriptedTLSRetryBatchFactory{observer: tlsretrybatchtest.New()}
 			familyConditionFactory := &scriptedFamilyConditionFactory{observer: familyconditiontest.New()}
+			browserPlaceholderFactory := &scriptedBrowserPlaceholderFactory{runner: browserplaceholdertest.New()}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 
@@ -1693,17 +1791,18 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				&stdout,
 				&stderr,
 				dependencies{
-					systemResolver:             resolver,
-					resolverInventory:          inventory,
-					newDNSObserver:             factory.New,
-					newDNSHTTPSPathObserver:    dnsHTTPSPathFactory.New,
-					newWebObserver:             webFactory.New,
-					newWebPathObserver:         webPathFactory.New,
-					newWebRecheckObserver:      webRecheckFactory.New,
-					newSSHObserver:             sshFactory.New,
-					newTLSObserver:             tlsFactory.New,
-					newTLSRetryBatchObserver:   tlsRetryBatchFactory.New,
-					newFamilyConditionObserver: familyConditionFactory.New,
+					systemResolver:              resolver,
+					resolverInventory:           inventory,
+					newDNSObserver:              factory.New,
+					newDNSHTTPSPathObserver:     dnsHTTPSPathFactory.New,
+					newWebObserver:              webFactory.New,
+					newWebPathObserver:          webPathFactory.New,
+					newWebRecheckObserver:       webRecheckFactory.New,
+					newSSHObserver:              sshFactory.New,
+					newTLSObserver:              tlsFactory.New,
+					newTLSRetryBatchObserver:    tlsRetryBatchFactory.New,
+					newFamilyConditionObserver:  familyConditionFactory.New,
+					newBrowserPlaceholderRunner: browserPlaceholderFactory.New,
 				},
 			)
 			if code != 2 {
@@ -1713,6 +1812,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				t.Fatalf("stdout = %q, want empty", stdout.String())
 			}
 			if !strings.Contains(stderr.String(), "Phase 0 diagnostic") ||
+				!strings.Contains(stderr.String(), "reachrun browser-placeholder") ||
 				!strings.Contains(stderr.String(), "reachrun resolver-inventory") ||
 				!strings.Contains(stderr.String(), "reachrun dns-observe") ||
 				!strings.Contains(stderr.String(), "reachrun dns-https-path") ||
@@ -1729,9 +1829,9 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				len(factory.calls) != 0 || len(dnsHTTPSPathFactory.calls) != 0 || len(webFactory.calls) != 0 ||
 				len(webPathFactory.calls) != 0 || len(webRecheckFactory.calls) != 0 || len(sshFactory.calls) != 0 ||
 				len(tlsFactory.calls) != 0 || len(tlsRetryBatchFactory.calls) != 0 ||
-				len(familyConditionFactory.calls) != 0 {
+				len(familyConditionFactory.calls) != 0 || len(browserPlaceholderFactory.calls) != 0 {
 				t.Fatalf(
-					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, DNS HTTPS-path factory %#v, Web factory %#v, Web-path factory %#v, Web-recheck factory %#v, SSH factory %#v, TLS factory %#v, TLS retry-batch factory %#v, family-condition factory %#v; want none",
+					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, DNS HTTPS-path factory %#v, Web factory %#v, Web-path factory %#v, Web-recheck factory %#v, SSH factory %#v, TLS factory %#v, TLS retry-batch factory %#v, family-condition factory %#v, browser-placeholder factory %#v; want none",
 					resolver.Calls(),
 					inventory.Calls(),
 					factory.calls,
@@ -1743,6 +1843,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 					tlsFactory.calls,
 					tlsRetryBatchFactory.calls,
 					familyConditionFactory.calls,
+					browserPlaceholderFactory.calls,
 				)
 			}
 		})
@@ -1757,6 +1858,17 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 		deps      dependencies
 		wantError string
 	}{
+		"browser placeholder": {
+			args: []string{"browser-placeholder"},
+			deps: dependencies{
+				newBrowserPlaceholderRunner: (&scriptedBrowserPlaceholderFactory{
+					runner: browserplaceholdertest.New(browserplaceholdertest.Step{
+						Result: browserplaceholder.Result{},
+					}),
+				}).New,
+			},
+			wantError: "invalid browser-placeholder result",
+		},
 		"address family conditions": {
 			args: []string{"family-conditions"},
 			deps: dependencies{
@@ -2246,6 +2358,49 @@ func TestRunTLSRetryBatchPropagatesParentCancellationAndAddsOuterDeadline(t *tes
 	}
 }
 
+func TestRunBrowserPlaceholderPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
+	t.Parallel()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := cliBrowserPlaceholderCancelledResult()
+	runner := browserPlaceholderRunnerFunc(func(
+		ctx context.Context,
+		notify browserplaceholder.FallbackNotifier,
+	) browserplaceholder.Result {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("browser-placeholder context error = %v, want context.Canceled", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("browser-placeholder context has no outer deadline")
+		}
+		if notify == nil {
+			t.Fatal("browser-placeholder fallback notifier is nil")
+		}
+		return result
+	})
+	factory := &scriptedBrowserPlaceholderFactory{runner: runner}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		parent,
+		[]string{"browser-placeholder"},
+		&stdout,
+		&stderr,
+		dependencies{newBrowserPlaceholderRunner: factory.New},
+	)
+	if code != 130 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 130/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[browserplaceholder.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0BrowserPlaceholderTimeout {
+		t.Fatalf("browser-placeholder timeout = %s, want %s", config.Timeout, phase0BrowserPlaceholderTimeout)
+	}
+}
+
 type scriptedDNSFactory struct {
 	observer dnsobservation.Observer
 	err      error
@@ -2320,6 +2475,27 @@ type scriptedTLSRetryBatchFactory struct {
 	observer tlsretrybatch.Observer
 	err      error
 	calls    []tlsretrybatch.Config
+}
+
+type scriptedBrowserPlaceholderFactory struct {
+	runner browserplaceholder.Runner
+	err    error
+	calls  []browserplaceholder.Config
+}
+
+func (f *scriptedBrowserPlaceholderFactory) New(
+	config browserplaceholder.Config,
+) (browserplaceholder.Runner, error) {
+	f.calls = append(f.calls, config)
+	return f.runner, f.err
+}
+
+func (f *scriptedBrowserPlaceholderFactory) singleConfig(t *testing.T) browserplaceholder.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("browser-placeholder factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
 }
 
 func (f *scriptedTLSRetryBatchFactory) New(
@@ -2499,6 +2675,18 @@ func (f tlsRetryBatchObserverFunc) Observe(
 	request tlsretrybatch.Request,
 ) tlsretrybatch.Result {
 	return f(ctx, request)
+}
+
+type browserPlaceholderRunnerFunc func(
+	context.Context,
+	browserplaceholder.FallbackNotifier,
+) browserplaceholder.Result
+
+func (f browserPlaceholderRunnerFunc) Run(
+	ctx context.Context,
+	notify browserplaceholder.FallbackNotifier,
+) browserplaceholder.Result {
+	return f(ctx, notify)
 }
 
 type familyConditionObserverFunc func(context.Context) familycondition.Result
@@ -3402,6 +3590,91 @@ func cliTLSRetryBatchResult(
 		StopReason: reason,
 		Detail:     detail,
 		Targets:    []tlsretrybatch.TargetResult{},
+	}
+}
+
+const cliBrowserPlaceholderURL = "http://127.0.0.1:40000/"
+
+func cliBrowserPlaceholderCompletedResult(withFallback bool) browserplaceholder.Result {
+	result := cliBrowserPlaceholderResult(browserplaceholder.StatusCompleted, "", "")
+	result.Completion = browserplaceholder.CompletionPageRequested
+	result.PageRequest = &browserplaceholder.PageRequest{
+		Method: "GET",
+		Host:   "127.0.0.1:40000",
+		Path:   "/",
+	}
+	if withFallback {
+		attempt := cliBrowserPlaceholderFailedAttempt()
+		result.OpenAttempt = &attempt
+		result.FallbackNotified = true
+	}
+	return result
+}
+
+func cliBrowserPlaceholderStoppedResult() browserplaceholder.Result {
+	return cliBrowserPlaceholderResult(
+		browserplaceholder.StatusStopped,
+		browserplaceholder.StopPlaceholderTimeout,
+		"context deadline exceeded",
+	)
+}
+
+func cliBrowserPlaceholderCancelledResult() browserplaceholder.Result {
+	return cliBrowserPlaceholderResult(
+		browserplaceholder.StatusCancelled,
+		browserplaceholder.StopCancelled,
+		"context canceled",
+	)
+}
+
+func cliBrowserPlaceholderFallback() *browserplaceholder.Fallback {
+	attempt := cliBrowserPlaceholderFailedAttempt()
+	return &browserplaceholder.Fallback{
+		URL:     cliBrowserPlaceholderURL,
+		Failure: *attempt.Failure,
+	}
+}
+
+func cliBrowserPlaceholderFailedAttempt() browseropener.Result {
+	return browseropener.Result{
+		Backend: "scripted-browser",
+		URL:     cliBrowserPlaceholderURL,
+		Status:  browseropener.StatusFailed,
+		Failure: &browseropener.Failure{
+			Code:   browseropener.FailureLaunchFailed,
+			Detail: "scripted browser launch failure",
+		},
+	}
+}
+
+func cliBrowserPlaceholderResult(
+	status browserplaceholder.Status,
+	reason browserplaceholder.StopReason,
+	detail string,
+) browserplaceholder.Result {
+	attempt := browseropener.Result{
+		Backend: "scripted-browser",
+		URL:     cliBrowserPlaceholderURL,
+		Status:  browseropener.StatusOpened,
+	}
+	return browserplaceholder.Result{
+		SchemaVersion: browserplaceholder.SchemaVersion,
+		Operation:     browserplaceholder.Operation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    4,
+		Platform:      cliPlatform(),
+		Input: browserplaceholder.Input{
+			ListenNetwork: "tcp4",
+			ListenAddress: "127.0.0.1:0",
+			Path:          "/",
+			OpenTimeoutMS: 5000,
+			TimeoutMS:     phase0BrowserPlaceholderTimeout.Milliseconds(),
+		},
+		URL:         cliBrowserPlaceholderURL,
+		OpenAttempt: &attempt,
+		Status:      status,
+		StopReason:  reason,
+		Detail:      detail,
 	}
 }
 
