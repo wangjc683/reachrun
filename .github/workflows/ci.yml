@@ -57,5 +57,6 @@ jobs:
 
       - name: Smoke test Phase 0 platform probes
         run: |
+          go run ./cmd/reachrun family-conditions
           go run ./cmd/reachrun resolve localhost
           go run ./cmd/reachrun resolver-inventory

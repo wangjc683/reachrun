@@ -16,10 +16,12 @@ import (
 
 	"github.com/wangjc683/reachrun/internal/dnshttpspath"
 	"github.com/wangjc683/reachrun/internal/dnsobservation"
+	"github.com/wangjc683/reachrun/internal/platform/familycondition"
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory"
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver"
 	"github.com/wangjc683/reachrun/internal/probe"
 	"github.com/wangjc683/reachrun/internal/sshobservation"
+	"github.com/wangjc683/reachrun/internal/tlsobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 	"github.com/wangjc683/reachrun/internal/webpath"
 	"github.com/wangjc683/reachrun/internal/webrecheck"
@@ -46,16 +48,20 @@ type webObserverFactory func(webobservation.Config) (webobservation.Observer, er
 type webPathObserverFactory func(webpath.Config) (webpath.Observer, error)
 type webRecheckObserverFactory func(webrecheck.Config) (webrecheck.Observer, error)
 type sshObserverFactory func(sshobservation.Config) (sshobservation.Observer, error)
+type tlsObserverFactory func(tlsobservation.Config) (tlsobservation.Observer, error)
+type familyConditionObserverFactory func(familycondition.Config) (familycondition.Observer, error)
 
 type dependencies struct {
-	systemResolver          systemresolver.Resolver
-	resolverInventory       resolverinventory.Observer
-	newDNSObserver          dnsObserverFactory
-	newDNSHTTPSPathObserver dnsHTTPSPathObserverFactory
-	newWebObserver          webObserverFactory
-	newWebPathObserver      webPathObserverFactory
-	newWebRecheckObserver   webRecheckObserverFactory
-	newSSHObserver          sshObserverFactory
+	systemResolver             systemresolver.Resolver
+	resolverInventory          resolverinventory.Observer
+	newDNSObserver             dnsObserverFactory
+	newDNSHTTPSPathObserver    dnsHTTPSPathObserverFactory
+	newWebObserver             webObserverFactory
+	newWebPathObserver         webPathObserverFactory
+	newWebRecheckObserver      webRecheckObserverFactory
+	newSSHObserver             sshObserverFactory
+	newTLSObserver             tlsObserverFactory
+	newFamilyConditionObserver familyConditionObserverFactory
 }
 
 func main() {
@@ -71,14 +77,16 @@ func mainExitCode() int {
 
 func productionDependencies() dependencies {
 	return dependencies{
-		systemResolver:          systemresolver.New(),
-		resolverInventory:       resolverinventory.New(),
-		newDNSObserver:          dnsobservation.New,
-		newDNSHTTPSPathObserver: dnshttpspath.New,
-		newWebObserver:          webobservation.New,
-		newWebPathObserver:      webpath.New,
-		newWebRecheckObserver:   webrecheck.New,
-		newSSHObserver:          sshobservation.New,
+		systemResolver:             systemresolver.New(),
+		resolverInventory:          resolverinventory.New(),
+		newDNSObserver:             dnsobservation.New,
+		newDNSHTTPSPathObserver:    dnshttpspath.New,
+		newWebObserver:             webobservation.New,
+		newWebPathObserver:         webpath.New,
+		newWebRecheckObserver:      webrecheck.New,
+		newSSHObserver:             sshobservation.New,
+		newTLSObserver:             tlsobservation.New,
+		newFamilyConditionObserver: familycondition.New,
 	}
 }
 
@@ -95,6 +103,12 @@ func run(
 	}
 
 	switch args[0] {
+	case "family-conditions":
+		if len(args) != 1 {
+			printUsage(stderr)
+			return 2
+		}
+		return runFamilyConditions(ctx, stdout, stderr, deps.newFamilyConditionObserver)
 	case "resolve":
 		if len(args) != 2 {
 			printUsage(stderr)
@@ -154,10 +168,62 @@ func run(
 			return 2
 		}
 		return runSSHObservation(ctx, request, stdout, stderr, deps.newSSHObserver)
+	case "tls-observe":
+		request, ok := parseTLSObservationArgs(args)
+		if !ok {
+			printUsage(stderr)
+			return 2
+		}
+		return runTLSObservation(ctx, request, stdout, stderr, deps.newTLSObserver)
 	default:
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runFamilyConditions(
+	ctx context.Context,
+	stdout io.Writer,
+	stderr io.Writer,
+	newObserver familyConditionObserverFactory,
+) int {
+	probeContext, cancel := context.WithTimeout(ctx, phase0ProbeTimeout)
+	defer cancel()
+
+	observer, err := newObserver(familycondition.Config{Timeout: phase0ProbeTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create address-family-condition observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(probeContext)
+	if err := familycondition.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid address-family-condition result: %v\n", err)
+		return 1
+	}
+	return emitResult(stdout, stderr, result, result.Outcome)
+}
+
+func runTLSObservation(
+	ctx context.Context,
+	request tlsobservation.Request,
+	stdout io.Writer,
+	stderr io.Writer,
+	newObserver tlsObserverFactory,
+) int {
+	probeContext, cancel := context.WithTimeout(ctx, phase0ProbeTimeout)
+	defer cancel()
+
+	observer, err := newObserver(tlsobservation.Config{Timeout: phase0ProbeTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create TLS observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(probeContext, request)
+	if err := tlsobservation.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid TLS observation result: %v\n", err)
+		return 1
+	}
+	return emitResult(stdout, stderr, result, result.Outcome)
 }
 
 func runWebRecheck(
@@ -513,6 +579,13 @@ func parseSSHObservationArgs(args []string) (sshobservation.Request, bool) {
 	return sshobservation.Request{DialIP: args[1], Port: port}, true
 }
 
+func parseTLSObservationArgs(args []string) (tlsobservation.Request, bool) {
+	if len(args) != 2 || args[0] != "tls-observe" {
+		return tlsobservation.Request{}, false
+	}
+	return tlsobservation.Request{DialIP: args[1]}, true
+}
+
 func resolverFor(provider string, transport dnsobservation.Transport) (dnsobservation.ResolverID, bool) {
 	switch provider {
 	case "current":
@@ -658,6 +731,7 @@ func emitResult(
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "Usage:")
+	fmt.Fprintln(output, "  reachrun family-conditions")
 	fmt.Fprintln(output, "  reachrun resolve <hostname>")
 	fmt.Fprintln(output, "  reachrun resolver-inventory")
 	fmt.Fprintln(output, "  reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME|SVCB|HTTPS> <hostname>")
@@ -666,5 +740,6 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "  reachrun web-recheck <hostname> <local-ip[,local-ip]> <reference-ip[,reference-ip]>")
 	fmt.Fprintln(output, "  reachrun web-observe <http|https> <hostname> <public-ip>")
 	fmt.Fprintln(output, "  reachrun ssh-observe <public-ip> [port]")
+	fmt.Fprintln(output, "  reachrun tls-observe <public-ip>")
 	fmt.Fprintln(output, "Phase 0 diagnostic only: each valid command prints one terminal JSON evidence document.")
 }

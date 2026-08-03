@@ -29,6 +29,12 @@ const (
 	// KindSSHObservation records one bounded SSH identification exchange while
 	// dialing an explicit public IP and port.
 	KindSSHObservation Kind = "ssh_observation"
+	// KindTLSObservation records one bounded TLS handshake against an explicit
+	// public IP without a hostname, SNI, or identity assertion.
+	KindTLSObservation Kind = "tls_observation"
+	// KindAddressFamilyConditions records whether the local kernel can select a
+	// public route and source address for IPv4 and IPv6 without sending payload.
+	KindAddressFamilyConditions Kind = "address_family_conditions"
 )
 
 // Capability describes how faithfully a probe source provides the intended

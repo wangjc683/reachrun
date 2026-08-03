@@ -8,15 +8,17 @@
 
 ## 1. 当前实现范围
 
-仓库目前实现了 Phase 0 的前七条垂直切片：
+仓库目前实现了 Phase 0 的前九条垂直切片：
 
 1. 通过操作系统普通 hostname 路径取得 **System Resolution**；
 2. 分别取得 **Resolver Inventory**，以及对明确 resolver 发起 UDP、TCP 或 DoH **DNS Observation**；
 3. 对 HTTPS/SVCB RR 形成类型化 DNS evidence，并以同一 resolver/transport 编排有界 **DNS HTTPS Path**，验证 AliasMode 重启、ServiceMode 兼容性与最终 A/AAAA 目标；
 4. 对一个明确候选公网 IP 发起第一跳 HTTP/HTTPS **Web Observation**，同时保留正确的 Host、TLS SNI 与证书身份；
 5. 对一个明确候选公网 IP 与 SSH 端口发起受限 **SSH Observation**，区分 TCP 未建立、端口可达但未确认 SSH，以及收到合法 SSH identification；
-6. 从 hostname 出发，以系统解析、公网候选、HTTPS 优先、受限 HTTP fallback 与安全重定向编排一次 **Public Web Path**，同时保留每一跳的原始解析与 Web 证据。
-7. 对同一 hostname 的本地与参考候选集合执行同地址族 **Web Candidate Recheck**，固定第一跳 HTTPS 条件并确保每个候选使用全新连接，只保留可比较证据而不产生 DNS 归因。
+6. 对没有主要网站域名的服务器公网 IP 发起固定 `443` 的 **TLS Observation**，不发送 SNI、不执行身份验证，并区分 TCP 未建立、TLS 已完成和 TCP 可达但 TLS 未确认；
+7. 从 hostname 出发，以系统解析、公网候选、HTTPS 优先、受限 HTTP fallback 与安全重定向编排一次 **Public Web Path**，同时保留每一跳的原始解析与 Web 证据；
+8. 对同一 hostname 的本地与参考候选集合执行同地址族 **Web Candidate Recheck**，固定第一跳 HTTPS 条件并确保每个候选使用全新连接，只保留可比较证据而不产生 DNS 归因；
+9. 在不发送网络载荷的前提下，通过内核 UDP route selection 分别取得 IPv4/IPv6 **Address Family Conditions**，区分已选路与明确的本机检测条件不可用。
 
 临时 CLI 为每次调用输出一份版本化 JSON **探测证据或路径报告**。它们用于验证跨平台网络能力，不是 V1 浏览器应用，也不包含资产、批次、判断或持久化模型。
 
@@ -28,6 +30,8 @@
 cmd/reachrun
     ├── internal/platform/systemresolver
     ├── internal/platform/resolverinventory
+    ├── internal/platform/familycondition
+    │        └── Go net + golang.org/x/sys/windows
     ├── internal/dnsobservation
     │        └── golang.org/x/net/dns/dnsmessage
     ├── internal/dnshttpspath
@@ -39,14 +43,16 @@ cmd/reachrun
     │        └── internal/webobservation
     ├── internal/webrecheck
     │        └── internal/webobservation
-    └── internal/sshobservation
-             └── Go net
+    ├── internal/sshobservation
+    │        └── Go net
+    └── internal/tlsobservation
+             └── Go net + crypto/tls
 
-Public Web Path、Web Candidate Recheck、Web 与 SSH Observation
+Public Web Path、Web Candidate Recheck、Web、SSH 与 TLS Observation
     └── internal/nettarget
             提供共享 Web hostname、request-target 与唯一公网字面量 IP 安全策略
 
-五个 probe module
+七个 probe module
     └── internal/probe
             提供 Phase 0 共用 envelope 生命周期与不变量
 
@@ -60,12 +66,14 @@ Windows resolver inventory
 | `internal/probe` | 版本为 1 的类型化 evidence envelope、probe kind、来源能力与 terminal outcome |
 | `internal/platform/systemresolver` | 系统解析的一次尝试、地址规范化、错误归类、backend 能力说明与结果校验 |
 | `internal/platform/resolverinventory` | 当前 resolver 配置的 best-effort 快照及平台能力说明 |
+| `internal/platform/familycondition` | 以固定双栈策略观察本机内核能否选择公网 route 与 source address；UDP connect 后不写入载荷，明确不可用作为中性 evidence |
 | `internal/dnsobservation` | 向不可变配置中的明确 resolver 发起一次 UDP、TCP 或 RFC 8484 DoH 查询，并解析类型化 DNS 响应 |
 | `internal/dnshttpspath` | 使用同一 DNS Observer 编排 HTTPS AliasMode、ServiceMode 兼容性及最终 A/AAAA 观测；输出保留 partial evidence 的独立路径报告，不改变原域名身份 |
 | `internal/webobservation` | 将 hostname 身份与拨号 IP 分开，对一个候选公网 IP 发起一次 HTTP/HTTPS 观测，并保留 TCP、TLS 与 HTTP 层证据；CLI 固定根路径，Web Path 可传入服务器派生的安全 path/query |
 | `internal/webpath` | 从一个 hostname 编排系统解析、受限公网候选、HTTPS-first/HTTP fallback 与安全重定向；输出保留 partial evidence 的独立路径报告，不产生健康或因果判断 |
 | `internal/webrecheck` | 对 caller 已分组的本地/参考公网候选执行同地址族、固定 HTTPS 第一跳的有界复核；交替保留完整 Web Observation，不证明候选来源且不产生 DNS 归因 |
 | `internal/sshobservation` | 对一个候选公网 IP 与单个 SSH 端口执行 TCP 建连和受限 identification 交换，不进入密钥交换或认证 |
+| `internal/tlsobservation` | 对没有 hostname 的一个候选公网 IP 固定执行 `443` TCP/TLS 观测；不发送 SNI、不验证证书身份、不发送 HTTP，并把握手完成或未确认保留为 TCP 建立后的 evidence |
 | `internal/nettarget` | 规范化 Web DNS hostname、受限 origin-form request-target 与单个公网字面量 IP，并集中拒绝 loopback、私网、链路本地、组播、文档/benchmark 保留等产品禁止地址 |
 | 各 `*test` 子包 | 给调用方测试使用的有限队列 adapter；精确返回 fixture、记录调用，队列耗尽时 panic |
 
@@ -288,11 +296,53 @@ TCP 建立后，implementation 发送固定的 `SSH-2.0-ReachRun_Phase0` 客户�
 
 因此 `outcome=succeeded` 只表示探测成功取得了可用事实，不等于 SSH 登录成功。`received` 只确认 SSH 协议端点响应；`unconfirmed` 只确认端口可达但未确认 SSH。用户取消仍覆盖任何迟到成功并返回 `cancelled`。
 
-## 12. CLI 组合与安全选择
+## 12. TLS Observation seam
+
+调用方只依赖：
+
+```go
+type Observer interface {
+    Observe(ctx context.Context, request Request) Result
+}
+```
+
+`Request` 只有一个公网字面量 IP。module 固定连接 `443`，不接受 hostname、port、HTTP path、TLS 选项或任意重试配置；IPv4 与 IPv6 分开调用，并复用 `internal/nettarget` 的唯一公网地址策略后直接使用 `tcp4` 或 `tcp6` 拨已校验的字面量地址。
+
+TLS client 固定不发送 SNI，不执行公有信任链、有效期或 hostname 身份验证，也不发送 HTTP。每份 normalized input 都显式记录 `sni_mode=omitted_no_hostname` 与 `identity_verification=not_performed_no_hostname`，因此握手完成不会被误读为网站身份成立。完成 evidence 只保存 TLS version、cipher suite、ALPN、peer certificate 数量，以及未验证 leaf certificate 的 SHA-256 指纹和有效期字段；证书 subject/SAN 不进入当前有界契约。
+
+证据按两层表达：
+
+- TCP 未建立时产生 `tcp_connection_refused`、`tcp_no_route`、`tcp_timeout`、`tcp_connection_reset` 或 `tcp_failure`；
+- TCP 已建立后始终形成 evidence。TLS handshake 完成为 `completed`；超时、关闭、重置、其他握手错误或本地交换失败为 `unconfirmed`，并保留稳定 `unconfirmed_reason`。该 reason 只描述实际交换，不声称缺少 SNI 就是失败原因。
+
+因此 `outcome=succeeded` 只表示已取得可用的 TCP/TLS 分层事实。`completed` 证明对端在无 SNI 条件下完成 TLS，但不证明证书可信、有效或属于某个 hostname；`unconfirmed` 证明端口可达但在缺少 hostname 上下文的有限尝试中没有确认 TLS。后续 assessment 才能按 PRD §11.4 映射“身份未验证”或“可能需要域名/SNI”。用户取消仍覆盖任何迟到成功并返回 `cancelled`。
+
+## 13. Address Family Conditions seam
+
+调用方只依赖：
+
+```go
+type Observer interface {
+    Observe(ctx context.Context) Result
+}
+```
+
+`Input` 为空；调用方不能选择 target、port、network、地址族顺序或发送行为。module 固定按 IPv4、IPv6 顺序对 `1.1.1.1:53` 与 `[2606:4700:4700::1111]:53` 执行 `udp4/udp6` connect，让内核选择 route 与 source address，但从不调用 `Write`。因此 evidence 中固定记录 `payload_bytes_sent=0`；该操作不证明载荷已送达、公网端点响应或整条 Internet 路径可用。
+
+成功 evidence 恰好包含两条 condition：
+
+- 内核选出 route 与非未指定 source address 时为 `route_selected/kernel_route_selected`，IPv6 zone 与规范化地址分开保存；
+- `no_route`、`address_family_unsupported`、`source_address_unavailable` 或 `network_down` 是成功采集到的 `unavailable` 本地条件，不是目标故障，整个 envelope 仍为 `outcome=succeeded`；
+- timeout、取消与无法稳定归类的 route-selection 错误不伪装成“本机没有 IPv6 条件”，分别进入 `timeout`、`cancelled` 或 `route_check_failure`。
+
+这个 seam 只回答“当前本机是否具备对该地址族继续检测的内核选路条件”。它与 Web、SSH、TLS 等目标 probe 保持独立，不把某个目标的 `no_route` 自动提升为资产异常，也不生成 IPv4/IPv6 assessment。Unix 与 Windows adapter 将各自稳定的 OS error 映射为相同 reason；原始错误文本只保留在失败 detail 中。
+
+## 14. CLI 组合与安全选择
 
 当前诊断入口：
 
 ```text
+reachrun family-conditions
 reachrun resolve <hostname>
 reachrun resolver-inventory
 reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME|SVCB|HTTPS> <hostname>
@@ -301,9 +351,12 @@ reachrun web-path <hostname>
 reachrun web-recheck <hostname> <local-ip[,local-ip]> <reference-ip[,reference-ip]>
 reachrun web-observe <http|https> <hostname> <public-ip>
 reachrun ssh-observe <public-ip> [port]
+reachrun tls-observe <public-ip>
 ```
 
-每个合法命令只向 stdout 输出一份 terminal evidence document。probe envelope 成功或任一路径报告 `completed` 退出 `0`，probe failure 或路径 `stopped` 退出 `1`，用法错误退出 `2`，取消退出 `130`。NXDOMAIN、NODATA 或 SERVFAIL 已收到合法 DNS 响应，`unsupported_service_mode` 已完成兼容性观测，任意 `4xx/5xx` 已收到合法 HTTP 响应，以及 SSH 端口可达但 identification 未确认，都是成功取得的 evidence，因此都退出 `0`。
+每个合法命令只向 stdout 输出一份 terminal evidence document。probe envelope 成功或任一路径报告 `completed` 退出 `0`，probe failure 或路径 `stopped` 退出 `1`，用法错误退出 `2`，取消退出 `130`。Address Family Conditions 的明确本机不可用、NXDOMAIN、NODATA 或 SERVFAIL 等合法 DNS 响应、`unsupported_service_mode` 已完成兼容性观测、任意 `4xx/5xx` 已收到合法 HTTP 响应、SSH 端口可达但 identification 未确认，以及 TLS 的 TCP 已连接但 handshake 未确认，都是成功取得的 evidence，因此都退出 `0`。
+
+`family-conditions` 不接受参数，执行第 13 节的固定双栈本机条件观察。它不发送 UDP payload；`unavailable/no_route` 只表示当前内核没有为该固定公网文字地址选出 route，不等于任意 IPv6 目标或资产异常。
 
 `current` 只允许 UDP/TCP。CLI 先取得一次 inventory，再按观察顺序选择第一个可拨号的 53 端口 server；会跳过其他端口、缺少 zone 的 IPv6 link-local、multicast 与 limited broadcast，IPv6 link-local 使用 evidence 中的 zone/interface。这个入口只验证“向该明确候选查询会发生什么”，不声称自动实现平台的 split-DNS 路由。私网 resolver 只能以这条 inventory 派生路径进入 DNS observer。
 
@@ -319,8 +372,10 @@ reachrun ssh-observe <public-ip> [port]
 
 `ssh-observe` 默认端口为 `22`，允许传入服务器资产所需的一个自定义合法端口。CLI 不接受范围、列表或 hostname，也不会调用系统 `ssh` 命令。合法 identification、TCP 已连接但未确认 SSH，以及 TCP 分层失败都只是一份 Phase 0 探测证据。
 
-## 13. 当前边界与下一次扩展
+`tls-observe` 只接受一个公网 IP，固定连接 `443`，不接受 hostname、port、SNI、证书开关或 HTTP 参数。TLS handshake 完成和 TCP 已连接但 TLS 未确认都退出 `0`，因为它们是不同层级的有效证据；前者不等于身份验证成功，后者也不等于 IP 不可达。
 
-尚不存在的能力包括把系统解析和两个独立参考解析自动接入候选复核并排除 CDN/GeoDNS 合法差异、无主要域名时的有限 TLS 结论、把 IPv6 no-route 解释为中性检测条件的 assessment、批次编排、snapshot、本地 HTTP 与 React UI。它们出现时应各自放入足够深的 module 或未来 `checkrun` implementation，不得给现有单次 probe 或三个 aggregate interface 增加无关方法，也不得建立巨型 `Platform` interface。
+## 15. 当前边界与下一次扩展
 
-System Resolution、Resolver Inventory、DNS Observation、Web Observation 与 SSH Observation 必须继续保持各自的证据契约。DNS HTTPS Path、Web Path 和 Web Candidate Recheck 只在各自独立 aggregate 中引用完整的底层结果，不把它们合并成一种模糊事件。任何一个单独失败、差异或超时都不能直接产生“DNS 污染”“被墙”或其他因果结论。
+尚不存在的能力包括把系统解析和两个独立参考解析自动接入候选复核并排除 CDN/GeoDNS 合法差异、把 Address Family Conditions 与各目标 probe 组合为中性 assessment、批次编排、snapshot、本地 HTTP 与 React UI。它们出现时应各自放入足够深的 module 或未来 `checkrun` implementation，不得给现有单次 probe 或三个 aggregate interface 增加无关方法，也不得建立巨型 `Platform` interface。
+
+System Resolution、Resolver Inventory、Address Family Conditions、DNS Observation、Web Observation、SSH Observation 与 TLS Observation 必须继续保持各自的证据契约。DNS HTTPS Path、Web Path 和 Web Candidate Recheck 只在各自独立 aggregate 中引用完整的底层结果，不把它们合并成一种模糊事件。任何一个单独失败、差异或超时都不能直接产生“DNS 污染”“被墙”或其他因果结论。

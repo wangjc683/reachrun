@@ -16,6 +16,8 @@ import (
 	"github.com/wangjc683/reachrun/internal/dnshttpspath/dnshttpspathtest"
 	"github.com/wangjc683/reachrun/internal/dnsobservation"
 	"github.com/wangjc683/reachrun/internal/dnsobservation/dnsobservationtest"
+	"github.com/wangjc683/reachrun/internal/platform/familycondition"
+	"github.com/wangjc683/reachrun/internal/platform/familycondition/familyconditiontest"
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory"
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory/resolverinventorytest"
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver"
@@ -23,6 +25,8 @@ import (
 	"github.com/wangjc683/reachrun/internal/probe"
 	"github.com/wangjc683/reachrun/internal/sshobservation"
 	"github.com/wangjc683/reachrun/internal/sshobservation/sshobservationtest"
+	"github.com/wangjc683/reachrun/internal/tlsobservation"
+	"github.com/wangjc683/reachrun/internal/tlsobservation/tlsobservationtest"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation/webobservationtest"
 	"github.com/wangjc683/reachrun/internal/webpath"
@@ -30,6 +34,89 @@ import (
 	"github.com/wangjc683/reachrun/internal/webrecheck"
 	"github.com/wangjc683/reachrun/internal/webrecheck/webrechecktest"
 )
+
+func TestRunFamilyConditionsPrintsOneEnvelopeAndReturnsOutcomeExitCode(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		result familycondition.Result
+		code   int
+	}{
+		"selected IPv4 and unavailable IPv6": {
+			result: cliFamilyConditionsSuccessResult(),
+			code:   0,
+		},
+		"route check failure": {
+			result: cliFamilyConditionsFailureResult(
+				probe.OutcomeFailed,
+				familycondition.FailureRouteCheck,
+			),
+			code: 1,
+		},
+		"cancelled": {
+			result: cliFamilyConditionsFailureResult(
+				probe.OutcomeCancelled,
+				probe.FailureCancelled,
+			),
+			code: 130,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			observer := familyconditiontest.New(test.result)
+			factory := &scriptedFamilyConditionFactory{observer: observer}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				[]string{"family-conditions"},
+				&stdout,
+				&stderr,
+				dependencies{newFamilyConditionObserver: factory.New},
+			)
+			if code != test.code || stderr.Len() != 0 {
+				t.Fatalf("run/stderr = %d/%q, want %d/empty", code, stderr.String(), test.code)
+			}
+			decoded := decodeOneJSON[familycondition.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+			if got := len(observer.Calls()); got != 1 {
+				t.Fatalf("family-condition calls = %d, want 1", got)
+			}
+			if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+				t.Fatalf("family-condition timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+			}
+		})
+	}
+}
+
+func TestRunReportsFamilyConditionObserverFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedFamilyConditionFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"family-conditions"},
+		&stdout,
+		&stderr,
+		dependencies{newFamilyConditionObserver: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run/stdout = %d/%q, want 1/empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create address-family-condition observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+		t.Fatalf("family-condition timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+	}
+}
 
 func TestRunResolvePrintsOneEnvelopeAndReturnsOutcomeExitCode(t *testing.T) {
 	t.Parallel()
@@ -1177,6 +1264,130 @@ func TestRunReportsWebRecheckFactoryErrorWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRunTLSObservationMapsTerminalEvidenceAndFixedRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		dialIP string
+		result tlsobservation.Result
+		code   int
+	}{
+		{
+			name:   "completed handshake without identity assertion",
+			dialIP: "93.184.216.34",
+			result: cliTLSCompletedResult("93.184.216.34"),
+			code:   0,
+		},
+		{
+			name:   "reachable but handshake unconfirmed",
+			dialIP: "2606:4700:4700::1111",
+			result: cliTLSUnconfirmedResult("2606:4700:4700::1111"),
+			code:   0,
+		},
+		{
+			name:   "TCP failure",
+			dialIP: "93.184.216.34",
+			result: cliTLSFailureResult(
+				"93.184.216.34",
+				probe.OutcomeFailed,
+				tlsobservation.FailureTCPConnectionRefused,
+			),
+			code: 1,
+		},
+		{
+			name:   "cancellation",
+			dialIP: "93.184.216.34",
+			result: cliTLSFailureResult(
+				"93.184.216.34",
+				probe.OutcomeCancelled,
+				probe.FailureCancelled,
+			),
+			code: 130,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			observer := tlsobservationtest.New(test.result)
+			factory := &scriptedTLSFactory{observer: observer}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				[]string{"tls-observe", test.dialIP},
+				&stdout,
+				&stderr,
+				dependencies{newTLSObserver: factory.New},
+			)
+			if code != test.code || stderr.Len() != 0 {
+				t.Fatalf("run/stderr = %d/%q, want %d/empty", code, stderr.String(), test.code)
+			}
+			decoded := decodeOneJSON[tlsobservation.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+			wantRequest := tlsobservation.Request{DialIP: test.dialIP}
+			if got := observer.Calls(); !reflect.DeepEqual(got, []tlsobservationtest.Call{{Request: wantRequest}}) {
+				t.Fatalf("TLS calls = %#v, want request %#v", got, wantRequest)
+			}
+			if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+				t.Fatalf("TLS timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+			}
+		})
+	}
+}
+
+func TestRunTLSObservationPassesInvalidIPToObserver(t *testing.T) {
+	t.Parallel()
+
+	result := cliTLSInvalidInputResult("not-an-ip")
+	observer := tlsobservationtest.New(result)
+	factory := &scriptedTLSFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"tls-observe", "not-an-ip"},
+		&stdout,
+		&stderr,
+		dependencies{newTLSObserver: factory.New},
+	)
+	if code != 1 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 1/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[tlsobservation.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRunReportsTLSObserverFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedTLSFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"tls-observe", "93.184.216.34"},
+		&stdout,
+		&stderr,
+		dependencies{newTLSObserver: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run/stdout = %d/%q, want 1/empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create TLS observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if got := factory.singleConfig(t); got.Timeout != phase0ProbeTimeout {
+		t.Fatalf("TLS timeout = %s, want %s", got.Timeout, phase0ProbeTimeout)
+	}
+}
+
 func TestRunSSHObservationMapsDefaultAndCustomPorts(t *testing.T) {
 	t.Parallel()
 
@@ -1318,6 +1529,7 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 
 	tests := map[string][]string{
 		"empty":                            nil,
+		"family conditions extra argument": {"family-conditions", "extra"},
 		"resolve missing hostname":         {"resolve"},
 		"resolve extra argument":           {"resolve", "example.com", "extra"},
 		"inventory extra argument":         {"resolver-inventory", "extra"},
@@ -1345,6 +1557,8 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 		"SSH nonnumeric port":              {"ssh-observe", "93.184.216.34", "ssh"},
 		"SSH zero port":                    {"ssh-observe", "93.184.216.34", "0"},
 		"SSH oversized port":               {"ssh-observe", "93.184.216.34", "65536"},
+		"TLS missing IP":                   {"tls-observe"},
+		"TLS extra argument":               {"tls-observe", "93.184.216.34", "extra"},
 	}
 
 	for name, args := range tests {
@@ -1358,6 +1572,8 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			webPathFactory := &scriptedWebPathFactory{observer: webpathtest.New()}
 			webRecheckFactory := &scriptedWebRecheckFactory{observer: webrechecktest.New()}
 			sshFactory := &scriptedSSHFactory{observer: sshobservationtest.New()}
+			tlsFactory := &scriptedTLSFactory{observer: tlsobservationtest.New()}
+			familyConditionFactory := &scriptedFamilyConditionFactory{observer: familyconditiontest.New()}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 
@@ -1367,14 +1583,16 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				&stdout,
 				&stderr,
 				dependencies{
-					systemResolver:          resolver,
-					resolverInventory:       inventory,
-					newDNSObserver:          factory.New,
-					newDNSHTTPSPathObserver: dnsHTTPSPathFactory.New,
-					newWebObserver:          webFactory.New,
-					newWebPathObserver:      webPathFactory.New,
-					newWebRecheckObserver:   webRecheckFactory.New,
-					newSSHObserver:          sshFactory.New,
+					systemResolver:             resolver,
+					resolverInventory:          inventory,
+					newDNSObserver:             factory.New,
+					newDNSHTTPSPathObserver:    dnsHTTPSPathFactory.New,
+					newWebObserver:             webFactory.New,
+					newWebPathObserver:         webPathFactory.New,
+					newWebRecheckObserver:      webRecheckFactory.New,
+					newSSHObserver:             sshFactory.New,
+					newTLSObserver:             tlsFactory.New,
+					newFamilyConditionObserver: familyConditionFactory.New,
 				},
 			)
 			if code != 2 {
@@ -1390,14 +1608,17 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				!strings.Contains(stderr.String(), "reachrun web-observe") ||
 				!strings.Contains(stderr.String(), "reachrun web-path") ||
 				!strings.Contains(stderr.String(), "reachrun web-recheck") ||
-				!strings.Contains(stderr.String(), "reachrun ssh-observe") {
+				!strings.Contains(stderr.String(), "reachrun ssh-observe") ||
+				!strings.Contains(stderr.String(), "reachrun tls-observe") ||
+				!strings.Contains(stderr.String(), "reachrun family-conditions") {
 				t.Fatalf("stderr = %q, want Phase 0 usage", stderr.String())
 			}
 			if len(resolver.Calls()) != 0 || len(inventory.Calls()) != 0 ||
 				len(factory.calls) != 0 || len(dnsHTTPSPathFactory.calls) != 0 || len(webFactory.calls) != 0 ||
-				len(webPathFactory.calls) != 0 || len(webRecheckFactory.calls) != 0 || len(sshFactory.calls) != 0 {
+				len(webPathFactory.calls) != 0 || len(webRecheckFactory.calls) != 0 || len(sshFactory.calls) != 0 ||
+				len(tlsFactory.calls) != 0 || len(familyConditionFactory.calls) != 0 {
 				t.Fatalf(
-					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, DNS HTTPS-path factory %#v, Web factory %#v, Web-path factory %#v, Web-recheck factory %#v, SSH factory %#v; want none",
+					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, DNS HTTPS-path factory %#v, Web factory %#v, Web-path factory %#v, Web-recheck factory %#v, SSH factory %#v, TLS factory %#v, family-condition factory %#v; want none",
 					resolver.Calls(),
 					inventory.Calls(),
 					factory.calls,
@@ -1406,6 +1627,8 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 					webPathFactory.calls,
 					webRecheckFactory.calls,
 					sshFactory.calls,
+					tlsFactory.calls,
+					familyConditionFactory.calls,
 				)
 			}
 		})
@@ -1420,6 +1643,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 		deps      dependencies
 		wantError string
 	}{
+		"address family conditions": {
+			args: []string{"family-conditions"},
+			deps: dependencies{
+				newFamilyConditionObserver: (&scriptedFamilyConditionFactory{
+					observer: familyconditiontest.New(familycondition.Result{}),
+				}).New,
+			},
+			wantError: "invalid address-family-condition result",
+		},
 		"system resolver": {
 			args:      []string{"resolve", "example.com"},
 			deps:      dependencies{systemResolver: systemresolvertest.New(systemresolver.Result{})},
@@ -1485,6 +1717,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 				}).New,
 			},
 			wantError: "invalid SSH observation result",
+		},
+		"TLS observation": {
+			args: []string{"tls-observe", "93.184.216.34"},
+			deps: dependencies{
+				newTLSObserver: (&scriptedTLSFactory{
+					observer: tlsobservationtest.New(tlsobservation.Result{}),
+				}).New,
+			},
+			wantError: "invalid TLS observation result",
 		},
 	}
 
@@ -1751,6 +1992,93 @@ func TestRunWebRecheckPropagatesParentCancellationAndAddsOuterDeadline(t *testin
 	}
 }
 
+func TestRunFamilyConditionsPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
+	t.Parallel()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := cliFamilyConditionsFailureResult(
+		probe.OutcomeCancelled,
+		probe.FailureCancelled,
+	)
+	observer := familyConditionObserverFunc(func(ctx context.Context) familycondition.Result {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("family-condition context error = %v, want context.Canceled", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("family-condition context has no outer deadline")
+		}
+		return result
+	})
+	factory := &scriptedFamilyConditionFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		parent,
+		[]string{"family-conditions"},
+		&stdout,
+		&stderr,
+		dependencies{newFamilyConditionObserver: factory.New},
+	)
+	if code != 130 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 130/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[familycondition.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0ProbeTimeout {
+		t.Fatalf("family-condition timeout = %s, want %s", config.Timeout, phase0ProbeTimeout)
+	}
+}
+
+func TestRunTLSObservationPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
+	t.Parallel()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := cliTLSFailureResult(
+		"93.184.216.34",
+		probe.OutcomeCancelled,
+		probe.FailureCancelled,
+	)
+	observer := tlsObserverFunc(func(
+		ctx context.Context,
+		request tlsobservation.Request,
+	) tlsobservation.Result {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("TLS context error = %v, want context.Canceled", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("TLS probe context has no outer deadline")
+		}
+		if request != (tlsobservation.Request{DialIP: "93.184.216.34"}) {
+			t.Fatalf("TLS request = %#v", request)
+		}
+		return result
+	})
+	factory := &scriptedTLSFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		parent,
+		[]string{"tls-observe", "93.184.216.34"},
+		&stdout,
+		&stderr,
+		dependencies{newTLSObserver: factory.New},
+	)
+	if code != 130 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 130/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[tlsobservation.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0ProbeTimeout {
+		t.Fatalf("TLS timeout = %s, want %s", config.Timeout, phase0ProbeTimeout)
+	}
+}
+
 type scriptedDNSFactory struct {
 	observer dnsobservation.Observer
 	err      error
@@ -1813,6 +2141,46 @@ type scriptedSSHFactory struct {
 	observer sshobservation.Observer
 	err      error
 	calls    []sshobservation.Config
+}
+
+type scriptedTLSFactory struct {
+	observer tlsobservation.Observer
+	err      error
+	calls    []tlsobservation.Config
+}
+
+type scriptedFamilyConditionFactory struct {
+	observer familycondition.Observer
+	err      error
+	calls    []familycondition.Config
+}
+
+func (f *scriptedFamilyConditionFactory) New(
+	config familycondition.Config,
+) (familycondition.Observer, error) {
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedFamilyConditionFactory) singleConfig(t *testing.T) familycondition.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("family-condition factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
+}
+
+func (f *scriptedTLSFactory) New(config tlsobservation.Config) (tlsobservation.Observer, error) {
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedTLSFactory) singleConfig(t *testing.T) tlsobservation.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("TLS factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
 }
 
 func (f *scriptedSSHFactory) New(config sshobservation.Config) (sshobservation.Observer, error) {
@@ -1927,6 +2295,21 @@ func (f sshObserverFunc) Observe(
 	return f(ctx, request)
 }
 
+type tlsObserverFunc func(context.Context, tlsobservation.Request) tlsobservation.Result
+
+func (f tlsObserverFunc) Observe(
+	ctx context.Context,
+	request tlsobservation.Request,
+) tlsobservation.Result {
+	return f(ctx, request)
+}
+
+type familyConditionObserverFunc func(context.Context) familycondition.Result
+
+func (f familyConditionObserverFunc) Observe(ctx context.Context) familycondition.Result {
+	return f(ctx)
+}
+
 func assertReferenceResolverConfig(t *testing.T, config dnsobservation.Config) {
 	t.Helper()
 	want := dnsobservation.Config{
@@ -1963,6 +2346,59 @@ func decodeOneJSON[T any](t *testing.T, data []byte) T {
 		t.Fatalf("stdout contains more than one JSON value: %q", string(data))
 	}
 	return result
+}
+
+func cliFamilyConditionsSuccessResult() familycondition.Result {
+	evidence := familycondition.Evidence{Conditions: []familycondition.Condition{
+		{
+			Family:           familycondition.FamilyIPv4,
+			Network:          "udp4",
+			RouteTarget:      familycondition.IPv4RouteTarget,
+			Status:           familycondition.StatusRouteSelected,
+			Reason:           familycondition.ReasonKernelRouteSelected,
+			LocalAddress:     "192.0.2.10",
+			PayloadBytesSent: 0,
+		},
+		{
+			Family:           familycondition.FamilyIPv6,
+			Network:          "udp6",
+			RouteTarget:      familycondition.IPv6RouteTarget,
+			Status:           familycondition.StatusUnavailable,
+			Reason:           familycondition.ReasonNoRoute,
+			PayloadBytesSent: 0,
+		},
+	}}
+	return cliFamilyConditionsResult(probe.OutcomeSucceeded, &evidence, nil)
+}
+
+func cliFamilyConditionsFailureResult(
+	outcome probe.Outcome,
+	code probe.FailureCode,
+) familycondition.Result {
+	return cliFamilyConditionsResult(
+		outcome,
+		nil,
+		&probe.Failure{Code: code, Detail: "scripted failure"},
+	)
+}
+
+func cliFamilyConditionsResult(
+	outcome probe.Outcome,
+	evidence *familycondition.Evidence,
+	failure *probe.Failure,
+) familycondition.Result {
+	return familycondition.Result{
+		SchemaVersion: probe.SchemaVersion,
+		Probe:         familycondition.ProbeKind,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    1,
+		Platform:      cliPlatform(),
+		Source:        cliSource(),
+		Input:         familycondition.Input{},
+		Outcome:       outcome,
+		Evidence:      evidence,
+		Failure:       failure,
+	}
 }
 
 func cliSystemResolverSuccessResult() systemresolver.Result {
@@ -2567,6 +3003,99 @@ func cliSSHResult(
 	return sshobservation.Result{
 		SchemaVersion: probe.SchemaVersion,
 		Probe:         probe.KindSSHObservation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    3,
+		Platform:      cliPlatform(),
+		Source:        cliSource(),
+		Input:         input,
+		Outcome:       outcome,
+		Evidence:      evidence,
+		Failure:       failure,
+	}
+}
+
+func cliTLSCompletedResult(dialIP string) tlsobservation.Result {
+	notBefore := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	evidence := tlsobservation.Evidence{
+		RemoteEndpoint: netip.AddrPortFrom(netip.MustParseAddr(dialIP), tlsobservation.Port).String(),
+		TCPConnectMS:   1,
+		TLS: tlsobservation.TLS{
+			Status:           tlsobservation.TLSCompleted,
+			HandshakeMS:      1,
+			Version:          "TLS1.3",
+			CipherSuite:      "TLS_AES_128_GCM_SHA256",
+			PeerCertificates: 1,
+			Leaf: &tlsobservation.LeafCertificate{
+				SHA256:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				NotBefore: notBefore,
+				NotAfter:  notBefore.Add(24 * time.Hour),
+			},
+		},
+	}
+	return cliTLSResult(probe.OutcomeSucceeded, cliTLSInput(dialIP), &evidence, nil)
+}
+
+func cliTLSUnconfirmedResult(dialIP string) tlsobservation.Result {
+	evidence := tlsobservation.Evidence{
+		RemoteEndpoint: netip.AddrPortFrom(netip.MustParseAddr(dialIP), tlsobservation.Port).String(),
+		TCPConnectMS:   1,
+		TLS: tlsobservation.TLS{
+			Status:            tlsobservation.TLSUnconfirmed,
+			UnconfirmedReason: tlsobservation.UnconfirmedHandshakeTimeout,
+			HandshakeMS:       1,
+		},
+	}
+	return cliTLSResult(probe.OutcomeSucceeded, cliTLSInput(dialIP), &evidence, nil)
+}
+
+func cliTLSFailureResult(
+	dialIP string,
+	outcome probe.Outcome,
+	code probe.FailureCode,
+) tlsobservation.Result {
+	return cliTLSResult(
+		outcome,
+		cliTLSInput(dialIP),
+		nil,
+		&probe.Failure{Code: code, Detail: "scripted failure"},
+	)
+}
+
+func cliTLSInvalidInputResult(dialIP string) tlsobservation.Result {
+	return cliTLSResult(
+		probe.OutcomeFailed,
+		cliTLSInput(dialIP),
+		nil,
+		&probe.Failure{Code: probe.FailureInvalidInput, Detail: "scripted invalid input"},
+	)
+}
+
+func cliTLSInput(dialIP string) tlsobservation.Input {
+	input := tlsobservation.Input{
+		DialIP:               dialIP,
+		Port:                 tlsobservation.Port,
+		SNIMode:              tlsobservation.SNIOmittedNoHostname,
+		IdentityVerification: tlsobservation.IdentityNotPerformedNoHostname,
+	}
+	if address, err := netip.ParseAddr(dialIP); err == nil {
+		if address.Unmap().Is4() {
+			input.Family = tlsobservation.FamilyIPv4
+		} else {
+			input.Family = tlsobservation.FamilyIPv6
+		}
+	}
+	return input
+}
+
+func cliTLSResult(
+	outcome probe.Outcome,
+	input tlsobservation.Input,
+	evidence *tlsobservation.Evidence,
+	failure *probe.Failure,
+) tlsobservation.Result {
+	return tlsobservation.Result{
+		SchemaVersion: probe.SchemaVersion,
+		Probe:         probe.KindTLSObservation,
 		ObservedAt:    cliObservedAt(),
 		DurationMS:    3,
 		Platform:      cliPlatform(),
