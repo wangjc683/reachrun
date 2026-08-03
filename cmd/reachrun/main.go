@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/wangjc683/reachrun/internal/dnshttpspath"
 	"github.com/wangjc683/reachrun/internal/dnsobservation"
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory"
 	"github.com/wangjc683/reachrun/internal/platform/systemresolver"
@@ -20,11 +22,14 @@ import (
 	"github.com/wangjc683/reachrun/internal/sshobservation"
 	"github.com/wangjc683/reachrun/internal/webobservation"
 	"github.com/wangjc683/reachrun/internal/webpath"
+	"github.com/wangjc683/reachrun/internal/webrecheck"
 )
 
 const (
-	phase0ProbeTimeout   = 5 * time.Second
-	phase0WebPathTimeout = 15 * time.Second
+	phase0ProbeTimeout        = 5 * time.Second
+	phase0WebPathTimeout      = 15 * time.Second
+	phase0DNSHTTPSPathTimeout = 30 * time.Second
+	phase0WebRecheckTimeout   = 25 * time.Second
 )
 
 const (
@@ -36,17 +41,21 @@ const (
 )
 
 type dnsObserverFactory func(dnsobservation.Config) (dnsobservation.Observer, error)
+type dnsHTTPSPathObserverFactory func(dnshttpspath.Config) (dnshttpspath.Observer, error)
 type webObserverFactory func(webobservation.Config) (webobservation.Observer, error)
 type webPathObserverFactory func(webpath.Config) (webpath.Observer, error)
+type webRecheckObserverFactory func(webrecheck.Config) (webrecheck.Observer, error)
 type sshObserverFactory func(sshobservation.Config) (sshobservation.Observer, error)
 
 type dependencies struct {
-	systemResolver     systemresolver.Resolver
-	resolverInventory  resolverinventory.Observer
-	newDNSObserver     dnsObserverFactory
-	newWebObserver     webObserverFactory
-	newWebPathObserver webPathObserverFactory
-	newSSHObserver     sshObserverFactory
+	systemResolver          systemresolver.Resolver
+	resolverInventory       resolverinventory.Observer
+	newDNSObserver          dnsObserverFactory
+	newDNSHTTPSPathObserver dnsHTTPSPathObserverFactory
+	newWebObserver          webObserverFactory
+	newWebPathObserver      webPathObserverFactory
+	newWebRecheckObserver   webRecheckObserverFactory
+	newSSHObserver          sshObserverFactory
 }
 
 func main() {
@@ -62,12 +71,14 @@ func mainExitCode() int {
 
 func productionDependencies() dependencies {
 	return dependencies{
-		systemResolver:     systemresolver.New(),
-		resolverInventory:  resolverinventory.New(),
-		newDNSObserver:     dnsobservation.New,
-		newWebObserver:     webobservation.New,
-		newWebPathObserver: webpath.New,
-		newSSHObserver:     sshobservation.New,
+		systemResolver:          systemresolver.New(),
+		resolverInventory:       resolverinventory.New(),
+		newDNSObserver:          dnsobservation.New,
+		newDNSHTTPSPathObserver: dnshttpspath.New,
+		newWebObserver:          webobservation.New,
+		newWebPathObserver:      webpath.New,
+		newWebRecheckObserver:   webrecheck.New,
+		newSSHObserver:          sshobservation.New,
 	}
 }
 
@@ -103,6 +114,13 @@ func run(
 			return 2
 		}
 		return runDNSObservation(ctx, request, provider, stdout, stderr, deps)
+	case "dns-https-path":
+		request, provider, ok := parseDNSHTTPSPathArgs(args)
+		if !ok {
+			printUsage(stderr)
+			return 2
+		}
+		return runDNSHTTPSPath(ctx, request, provider, stdout, stderr, deps)
 	case "web-observe":
 		request, ok := parseWebObservationArgs(args)
 		if !ok {
@@ -122,6 +140,13 @@ func run(
 			stderr,
 			deps.newWebPathObserver,
 		)
+	case "web-recheck":
+		request, ok := parseWebRecheckArgs(args)
+		if !ok {
+			printUsage(stderr)
+			return 2
+		}
+		return runWebRecheck(ctx, request, stdout, stderr, deps.newWebRecheckObserver)
 	case "ssh-observe":
 		request, ok := parseSSHObservationArgs(args)
 		if !ok {
@@ -133,6 +158,36 @@ func run(
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runWebRecheck(
+	ctx context.Context,
+	request webrecheck.Request,
+	stdout io.Writer,
+	stderr io.Writer,
+	newObserver webRecheckObserverFactory,
+) int {
+	recheckContext, cancel := context.WithTimeout(ctx, phase0WebRecheckTimeout)
+	defer cancel()
+
+	observer, err := newObserver(webrecheck.Config{Timeout: phase0WebRecheckTimeout})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create Web candidate recheck observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(recheckContext, request)
+	if err := webrecheck.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid Web candidate recheck result: %v\n", err)
+		return 1
+	}
+	outcome := probe.OutcomeFailed
+	switch result.Status {
+	case webrecheck.StatusCompleted:
+		outcome = probe.OutcomeSucceeded
+	case webrecheck.StatusCancelled:
+		outcome = probe.OutcomeCancelled
+	}
+	return emitResult(stdout, stderr, result, outcome)
 }
 
 func runWebPath(
@@ -257,27 +312,7 @@ func runDNSObservation(
 	probeContext, cancel := context.WithTimeout(ctx, phase0ProbeTimeout)
 	defer cancel()
 
-	config := referenceResolverConfig()
-	if provider == "current" {
-		inventory := deps.resolverInventory.Observe(probeContext)
-		if resolverinventory.Validate(inventory) == nil && inventory.Outcome == probe.OutcomeCancelled {
-			// Inventory is part of this one DNS command. Preserve explicit user
-			// cancellation in the shared context so it dominates the otherwise
-			// expected "current resolver is unavailable" setup failure.
-			cancel()
-		}
-		endpoint, err := currentResolverEndpoint(inventory)
-		if err != nil {
-			// Keep "current" unconfigured. The DNS observer then returns this
-			// command's one terminal DNS envelope; resolver inventory is diagnostic
-			// input, not command output.
-			if probeContext.Err() != context.Canceled {
-				fmt.Fprintf(stderr, "reachrun: current resolver unavailable: %v\n", err)
-			}
-		} else {
-			config.Resolvers = append(config.Resolvers, endpoint)
-		}
-	}
+	config := resolverConfigForProvider(probeContext, cancel, provider, stderr, deps)
 
 	observer, err := deps.newDNSObserver(config)
 	if err != nil {
@@ -292,20 +327,79 @@ func runDNSObservation(
 	return emitResult(stdout, stderr, result, result.Outcome)
 }
 
+func runDNSHTTPSPath(
+	ctx context.Context,
+	request dnshttpspath.Request,
+	provider string,
+	stdout io.Writer,
+	stderr io.Writer,
+	deps dependencies,
+) int {
+	pathContext, cancel := context.WithTimeout(ctx, phase0DNSHTTPSPathTimeout)
+	defer cancel()
+
+	dnsConfig := resolverConfigForProvider(pathContext, cancel, provider, stderr, deps)
+	observer, err := deps.newDNSHTTPSPathObserver(dnshttpspath.Config{
+		DNS:     dnsConfig,
+		Timeout: phase0DNSHTTPSPathTimeout,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "reachrun: create DNS HTTPS-path observer: %v\n", err)
+		return 1
+	}
+	result := observer.Observe(pathContext, request)
+	if err := dnshttpspath.Validate(result); err != nil {
+		fmt.Fprintf(stderr, "reachrun: invalid DNS HTTPS-path result: %v\n", err)
+		return 1
+	}
+	outcome := probe.OutcomeFailed
+	switch result.Status {
+	case dnshttpspath.StatusCompleted:
+		outcome = probe.OutcomeSucceeded
+	case dnshttpspath.StatusCancelled:
+		outcome = probe.OutcomeCancelled
+	}
+	return emitResult(stdout, stderr, result, outcome)
+}
+
+func resolverConfigForProvider(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	provider string,
+	stderr io.Writer,
+	deps dependencies,
+) dnsobservation.Config {
+	config := referenceResolverConfig()
+	if provider != "current" {
+		return config
+	}
+
+	inventory := deps.resolverInventory.Observe(ctx)
+	if resolverinventory.Validate(inventory) == nil && inventory.Outcome == probe.OutcomeCancelled {
+		// Inventory is part of the same command. Preserve explicit cancellation
+		// so it dominates the expected "current resolver unavailable" setup path.
+		cancel()
+	}
+	endpoint, err := currentResolverEndpoint(inventory)
+	if err != nil {
+		// Keep "current" unconfigured. The selected observer returns this
+		// command's terminal evidence; inventory remains diagnostic input.
+		if ctx.Err() != context.Canceled {
+			fmt.Fprintf(stderr, "reachrun: current resolver unavailable: %v\n", err)
+		}
+		return config
+	}
+	config.Resolvers = append(config.Resolvers, endpoint)
+	return config
+}
+
 func parseDNSObservationArgs(args []string) (dnsobservation.Request, string, bool) {
 	if len(args) != 5 || args[0] != "dns-observe" {
 		return dnsobservation.Request{}, "", false
 	}
 
-	var transport dnsobservation.Transport
-	switch args[1] {
-	case string(dnsobservation.TransportUDP):
-		transport = dnsobservation.TransportUDP
-	case string(dnsobservation.TransportTCP):
-		transport = dnsobservation.TransportTCP
-	case string(dnsobservation.TransportDoH):
-		transport = dnsobservation.TransportDoH
-	default:
+	transport, ok := parseDNSTransport(args[1])
+	if !ok {
 		return dnsobservation.Request{}, "", false
 	}
 
@@ -323,6 +417,10 @@ func parseDNSObservationArgs(args []string) (dnsobservation.Request, string, boo
 		queryType = dnsobservation.QueryTypeAAAA
 	case string(dnsobservation.QueryTypeCNAME):
 		queryType = dnsobservation.QueryTypeCNAME
+	case string(dnsobservation.QueryTypeSVCB):
+		queryType = dnsobservation.QueryTypeSVCB
+	case string(dnsobservation.QueryTypeHTTPS):
+		queryType = dnsobservation.QueryTypeHTTPS
 	default:
 		return dnsobservation.Request{}, "", false
 	}
@@ -333,6 +431,48 @@ func parseDNSObservationArgs(args []string) (dnsobservation.Request, string, boo
 		Resolver:  resolver,
 		Transport: transport,
 	}, provider, true
+}
+
+func parseDNSHTTPSPathArgs(args []string) (dnshttpspath.Request, string, bool) {
+	if len(args) != 4 || args[0] != "dns-https-path" {
+		return dnshttpspath.Request{}, "", false
+	}
+	transport, ok := parseDNSTransport(args[1])
+	if !ok {
+		return dnshttpspath.Request{}, "", false
+	}
+	provider := args[2]
+	resolver, ok := resolverFor(provider, transport)
+	if !ok {
+		return dnshttpspath.Request{}, "", false
+	}
+	return dnshttpspath.Request{
+		Hostname: args[3], Resolver: resolver, Transport: transport,
+	}, provider, true
+}
+
+func parseWebRecheckArgs(args []string) (webrecheck.Request, bool) {
+	if len(args) != 4 || args[0] != "web-recheck" {
+		return webrecheck.Request{}, false
+	}
+	return webrecheck.Request{
+		Hostname:            args[1],
+		LocalCandidates:     strings.Split(args[2], ","),
+		ReferenceCandidates: strings.Split(args[3], ","),
+	}, true
+}
+
+func parseDNSTransport(value string) (dnsobservation.Transport, bool) {
+	switch value {
+	case string(dnsobservation.TransportUDP):
+		return dnsobservation.TransportUDP, true
+	case string(dnsobservation.TransportTCP):
+		return dnsobservation.TransportTCP, true
+	case string(dnsobservation.TransportDoH):
+		return dnsobservation.TransportDoH, true
+	default:
+		return "", false
+	}
 }
 
 func parseWebObservationArgs(args []string) (webobservation.Request, bool) {
@@ -520,8 +660,10 @@ func printUsage(output io.Writer) {
 	fmt.Fprintln(output, "Usage:")
 	fmt.Fprintln(output, "  reachrun resolve <hostname>")
 	fmt.Fprintln(output, "  reachrun resolver-inventory")
-	fmt.Fprintln(output, "  reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME> <hostname>")
+	fmt.Fprintln(output, "  reachrun dns-observe <udp|tcp|doh> <current|cloudflare|google> <A|AAAA|CNAME|SVCB|HTTPS> <hostname>")
+	fmt.Fprintln(output, "  reachrun dns-https-path <udp|tcp|doh> <current|cloudflare|google> <hostname>")
 	fmt.Fprintln(output, "  reachrun web-path <hostname>")
+	fmt.Fprintln(output, "  reachrun web-recheck <hostname> <local-ip[,local-ip]> <reference-ip[,reference-ip]>")
 	fmt.Fprintln(output, "  reachrun web-observe <http|https> <hostname> <public-ip>")
 	fmt.Fprintln(output, "  reachrun ssh-observe <public-ip> [port]")
 	fmt.Fprintln(output, "Phase 0 diagnostic only: each valid command prints one terminal JSON evidence document.")

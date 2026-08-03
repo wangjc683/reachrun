@@ -59,13 +59,15 @@ const (
 	TransportDoH Transport = "doh"
 )
 
-// QueryType is the small record-type set supported by this Phase 0 slice.
+// QueryType is the bounded record-type set supported by this Phase 0 slice.
 type QueryType string
 
 const (
 	QueryTypeA     QueryType = "A"
 	QueryTypeAAAA  QueryType = "AAAA"
 	QueryTypeCNAME QueryType = "CNAME"
+	QueryTypeSVCB  QueryType = "SVCB"
+	QueryTypeHTTPS QueryType = "HTTPS"
 )
 
 // ResolverEndpoint defines exactly one named wire-DNS or DoH resolver. For a
@@ -146,15 +148,45 @@ const (
 	IPFamilyIPv6 IPFamily = "ipv6"
 )
 
-// Record is a tagged A, AAAA, or CNAME answer. Records remain in DNS wire
-// order. Address is populated only for A/AAAA; Target only for CNAME.
+// ServiceBindingMode distinguishes AliasMode from ServiceMode without asking
+// consumers to repeat the SvcPriority zero check.
+type ServiceBindingMode string
+
+const (
+	ServiceBindingAlias   ServiceBindingMode = "alias"
+	ServiceBindingService ServiceBindingMode = "service"
+)
+
+// ServiceParameter preserves one ordered SvcParam as a stable numeric key,
+// registry name, and lowercase hexadecimal wire value. The wire value remains
+// available even when the current version does not understand the parameter.
+type ServiceParameter struct {
+	Key      uint16 `json:"key"`
+	Name     string `json:"name"`
+	ValueHex string `json:"value_hex"`
+}
+
+// ServiceBinding is the typed RDATA shared by HTTPS and SVCB records.
+// AliasMode parameters are retained as evidence even though RFC 9460 requires
+// clients to ignore them while following the alias.
+type ServiceBinding struct {
+	Priority uint16             `json:"priority"`
+	Target   string             `json:"target"`
+	Mode     ServiceBindingMode `json:"mode"`
+	Params   []ServiceParameter `json:"params"`
+}
+
+// Record is a tagged A, AAAA, CNAME, SVCB, or HTTPS answer. Records remain in
+// DNS wire order. Address is populated only for A/AAAA, Target only for CNAME,
+// and Service only for SVCB/HTTPS.
 type Record struct {
-	Name    string    `json:"name"`
-	Type    QueryType `json:"type"`
-	TTL     uint32    `json:"ttl"`
-	Address string    `json:"address,omitempty"`
-	Family  IPFamily  `json:"family,omitempty"`
-	Target  string    `json:"target,omitempty"`
+	Name    string          `json:"name"`
+	Type    QueryType       `json:"type"`
+	TTL     uint32          `json:"ttl"`
+	Address string          `json:"address,omitempty"`
+	Family  IPFamily        `json:"family,omitempty"`
+	Target  string          `json:"target,omitempty"`
+	Service *ServiceBinding `json:"service,omitempty"`
 }
 
 // SOARecord captures the first authority SOA used to support a negative

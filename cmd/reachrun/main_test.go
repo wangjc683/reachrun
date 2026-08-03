@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wangjc683/reachrun/internal/dnshttpspath"
+	"github.com/wangjc683/reachrun/internal/dnshttpspath/dnshttpspathtest"
 	"github.com/wangjc683/reachrun/internal/dnsobservation"
 	"github.com/wangjc683/reachrun/internal/dnsobservation/dnsobservationtest"
 	"github.com/wangjc683/reachrun/internal/platform/resolverinventory"
@@ -25,6 +27,8 @@ import (
 	"github.com/wangjc683/reachrun/internal/webobservation/webobservationtest"
 	"github.com/wangjc683/reachrun/internal/webpath"
 	"github.com/wangjc683/reachrun/internal/webpath/webpathtest"
+	"github.com/wangjc683/reachrun/internal/webrecheck"
+	"github.com/wangjc683/reachrun/internal/webrecheck/webrechecktest"
 )
 
 func TestRunResolvePrintsOneEnvelopeAndReturnsOutcomeExitCode(t *testing.T) {
@@ -185,6 +189,16 @@ func TestRunDNSObservationMapsFixedProvidersTransportsAndQueryTypes(t *testing.T
 		{
 			name: "google doh A", transport: dnsobservation.TransportDoH,
 			provider: "google", queryType: dnsobservation.QueryTypeA,
+			resolver: resolverGoogleDoH, endpoint: "https://dns.google/dns-query",
+		},
+		{
+			name: "cloudflare udp HTTPS", transport: dnsobservation.TransportUDP,
+			provider: "cloudflare", queryType: dnsobservation.QueryTypeHTTPS,
+			resolver: resolverCloudflareWire, endpoint: "1.1.1.1:53",
+		},
+		{
+			name: "google doh SVCB", transport: dnsobservation.TransportDoH,
+			provider: "google", queryType: dnsobservation.QueryTypeSVCB,
 			resolver: resolverGoogleDoH, endpoint: "https://dns.google/dns-query",
 		},
 	}
@@ -676,6 +690,125 @@ func TestRunDNSObservationCurrentCancellationReturnsOneCancelledDNSEnvelope(t *t
 	}
 }
 
+func TestRunDNSHTTPSPathMapsFixedProviderAndPrintsAggregate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		transport dnsobservation.Transport
+		provider  string
+		resolver  dnsobservation.ResolverID
+		endpoint  string
+	}{
+		{
+			name: "cloudflare UDP", transport: dnsobservation.TransportUDP,
+			provider: "cloudflare", resolver: resolverCloudflareWire, endpoint: "1.1.1.1:53",
+		},
+		{
+			name: "google DoH", transport: dnsobservation.TransportDoH,
+			provider: "google", resolver: resolverGoogleDoH, endpoint: "https://dns.google/dns-query",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			result := cliDNSHTTPSPathSuccessResult(test.resolver, test.transport, test.endpoint)
+			path := dnshttpspathtest.New(result)
+			factory := &scriptedDNSHTTPSPathFactory{observer: path}
+			inventory := resolverinventorytest.New()
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				[]string{"dns-https-path", string(test.transport), test.provider, "example.com"},
+				&stdout,
+				&stderr,
+				dependencies{
+					resolverInventory:       inventory,
+					newDNSHTTPSPathObserver: factory.New,
+				},
+			)
+			if code != 0 || stderr.Len() != 0 {
+				t.Fatalf("run/stderr = %d/%q, want 0/empty", code, stderr.String())
+			}
+			decoded := decodeOneJSON[dnshttpspath.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+			}
+			wantRequest := dnshttpspath.Request{
+				Hostname: "example.com", Resolver: test.resolver, Transport: test.transport,
+			}
+			if calls := path.Calls(); !reflect.DeepEqual(calls, []dnshttpspathtest.Call{{Request: wantRequest}}) {
+				t.Fatalf("path calls = %#v, want %#v", calls, wantRequest)
+			}
+			if len(inventory.Calls()) != 0 {
+				t.Fatalf("inventory calls = %#v, want none", inventory.Calls())
+			}
+			config := factory.singleConfig(t)
+			if config.Timeout != phase0DNSHTTPSPathTimeout {
+				t.Fatalf("path timeout = %s, want %s", config.Timeout, phase0DNSHTTPSPathTimeout)
+			}
+			assertReferenceResolverConfig(t, config.DNS)
+		})
+	}
+}
+
+func TestRunDNSHTTPSPathReturnsTerminalExitCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result dnshttpspath.Result
+		code   int
+	}{
+		{
+			name: "stopped",
+			result: cliDNSHTTPSPathTerminalResult(
+				dnshttpspath.StatusStopped,
+				dnshttpspath.StopPathTimeout,
+				"path deadline exceeded",
+			),
+			code: 1,
+		},
+		{
+			name: "cancelled",
+			result: cliDNSHTTPSPathTerminalResult(
+				dnshttpspath.StatusCancelled,
+				dnshttpspath.StopCancelled,
+				"context canceled",
+			),
+			code: 130,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := dnshttpspathtest.New(test.result)
+			factory := &scriptedDNSHTTPSPathFactory{observer: path}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				[]string{"dns-https-path", "udp", "cloudflare", "example.com"},
+				&stdout,
+				&stderr,
+				dependencies{newDNSHTTPSPathObserver: factory.New},
+			)
+			if code != test.code || stderr.Len() != 0 {
+				t.Fatalf("run/stderr = %d/%q, want %d/empty", code, stderr.String(), test.code)
+			}
+			decoded := decodeOneJSON[dnshttpspath.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+		})
+	}
+}
+
 func TestRunWebObservationMapsRequestAndReturnsOutcomeExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -928,6 +1061,122 @@ func TestRunReportsWebPathFactoryErrorWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRunWebRecheckPrintsOneReportAndMapsTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		args     []string
+		request  webrecheck.Request
+		result   webrecheck.Result
+		exitCode int
+	}{
+		{
+			name: "completed bounded candidate sets",
+			args: []string{
+				"web-recheck", "example.com", "8.8.8.8,1.0.0.1", "1.1.1.1,8.8.4.4",
+			},
+			request: webrecheck.Request{
+				Hostname:            "example.com",
+				LocalCandidates:     []string{"8.8.8.8", "1.0.0.1"},
+				ReferenceCandidates: []string{"1.1.1.1", "8.8.4.4"},
+			},
+			result: cliWebRecheckCompletedResult(
+				[]string{"8.8.8.8", "1.0.0.1"},
+				[]string{"1.1.1.1", "8.8.4.4"},
+			),
+			exitCode: 0,
+		},
+		{
+			name: "stopped",
+			args: []string{"web-recheck", "example.com", "8.8.8.8", "1.1.1.1"},
+			request: webrecheck.Request{
+				Hostname:            "example.com",
+				LocalCandidates:     []string{"8.8.8.8"},
+				ReferenceCandidates: []string{"1.1.1.1"},
+			},
+			result: cliWebRecheckEmptyResult(
+				webrecheck.StatusStopped,
+				webrecheck.StopRecheckTimeout,
+				"scripted timeout",
+			),
+			exitCode: 1,
+		},
+		{
+			name: "cancelled",
+			args: []string{"web-recheck", "example.com", "8.8.8.8", "1.1.1.1"},
+			request: webrecheck.Request{
+				Hostname:            "example.com",
+				LocalCandidates:     []string{"8.8.8.8"},
+				ReferenceCandidates: []string{"1.1.1.1"},
+			},
+			result: cliWebRecheckEmptyResult(
+				webrecheck.StatusCancelled,
+				webrecheck.StopCancelled,
+				"",
+			),
+			exitCode: 130,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			recheck := webrechecktest.New(test.result)
+			factory := &scriptedWebRecheckFactory{observer: recheck}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(
+				context.Background(),
+				test.args,
+				&stdout,
+				&stderr,
+				dependencies{newWebRecheckObserver: factory.New},
+			)
+			if code != test.exitCode || stderr.Len() != 0 {
+				t.Fatalf("run/stderr = %d/%q, want %d/empty", code, stderr.String(), test.exitCode)
+			}
+			decoded := decodeOneJSON[webrecheck.Result](t, stdout.Bytes())
+			if !reflect.DeepEqual(decoded, test.result) {
+				t.Fatalf("decoded result = %#v, want %#v", decoded, test.result)
+			}
+			wantCalls := []webrechecktest.Call{{Request: test.request}}
+			if calls := recheck.Calls(); !reflect.DeepEqual(calls, wantCalls) {
+				t.Fatalf("Web recheck calls = %#v, want %#v", calls, wantCalls)
+			}
+			if config := factory.singleConfig(t); config.Timeout != phase0WebRecheckTimeout {
+				t.Fatalf("Web recheck timeout = %s, want %s", config.Timeout, phase0WebRecheckTimeout)
+			}
+		})
+	}
+}
+
+func TestRunReportsWebRecheckFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedWebRecheckFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"web-recheck", "example.com", "8.8.8.8", "1.1.1.1"},
+		&stdout,
+		&stderr,
+		dependencies{newWebRecheckObserver: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run/stdout = %d/%q, want 1/empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create Web candidate recheck observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0WebRecheckTimeout {
+		t.Fatalf("Web recheck timeout = %s, want %s", config.Timeout, phase0WebRecheckTimeout)
+	}
+}
+
 func TestRunSSHObservationMapsDefaultAndCustomPorts(t *testing.T) {
 	t.Parallel()
 
@@ -1068,27 +1317,34 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string][]string{
-		"empty":                        nil,
-		"resolve missing hostname":     {"resolve"},
-		"resolve extra argument":       {"resolve", "example.com", "extra"},
-		"inventory extra argument":     {"resolver-inventory", "extra"},
-		"DNS missing argument":         {"dns-observe", "udp", "cloudflare", "A"},
-		"DNS extra argument":           {"dns-observe", "udp", "cloudflare", "A", "example.com", "extra"},
-		"unknown command":              {"inspect"},
-		"unknown transport":            {"dns-observe", "UDP", "cloudflare", "A", "example.com"},
-		"unknown provider":             {"dns-observe", "udp", "quad9", "A", "example.com"},
-		"lowercase query type":         {"dns-observe", "udp", "cloudflare", "a", "example.com"},
-		"current does not support DoH": {"dns-observe", "doh", "current", "A", "example.com"},
-		"Web missing argument":         {"web-observe", "https", "example.com"},
-		"Web extra argument":           {"web-observe", "https", "example.com", "93.184.216.34", "extra"},
-		"unknown Web scheme":           {"web-observe", "HTTPS", "example.com", "93.184.216.34"},
-		"Web path missing hostname":    {"web-path"},
-		"Web path extra argument":      {"web-path", "example.com", "extra"},
-		"SSH missing IP":               {"ssh-observe"},
-		"SSH extra argument":           {"ssh-observe", "93.184.216.34", "22", "extra"},
-		"SSH nonnumeric port":          {"ssh-observe", "93.184.216.34", "ssh"},
-		"SSH zero port":                {"ssh-observe", "93.184.216.34", "0"},
-		"SSH oversized port":           {"ssh-observe", "93.184.216.34", "65536"},
+		"empty":                            nil,
+		"resolve missing hostname":         {"resolve"},
+		"resolve extra argument":           {"resolve", "example.com", "extra"},
+		"inventory extra argument":         {"resolver-inventory", "extra"},
+		"DNS missing argument":             {"dns-observe", "udp", "cloudflare", "A"},
+		"DNS extra argument":               {"dns-observe", "udp", "cloudflare", "A", "example.com", "extra"},
+		"unknown command":                  {"inspect"},
+		"unknown transport":                {"dns-observe", "UDP", "cloudflare", "A", "example.com"},
+		"unknown provider":                 {"dns-observe", "udp", "quad9", "A", "example.com"},
+		"lowercase query type":             {"dns-observe", "udp", "cloudflare", "a", "example.com"},
+		"current does not support DoH":     {"dns-observe", "doh", "current", "A", "example.com"},
+		"DNS HTTPS path missing hostname":  {"dns-https-path", "udp", "cloudflare"},
+		"DNS HTTPS path extra argument":    {"dns-https-path", "udp", "cloudflare", "example.com", "extra"},
+		"DNS HTTPS path unknown transport": {"dns-https-path", "UDP", "cloudflare", "example.com"},
+		"DNS HTTPS path unknown provider":  {"dns-https-path", "udp", "quad9", "example.com"},
+		"DNS HTTPS path current DoH":       {"dns-https-path", "doh", "current", "example.com"},
+		"Web missing argument":             {"web-observe", "https", "example.com"},
+		"Web extra argument":               {"web-observe", "https", "example.com", "93.184.216.34", "extra"},
+		"unknown Web scheme":               {"web-observe", "HTTPS", "example.com", "93.184.216.34"},
+		"Web path missing hostname":        {"web-path"},
+		"Web path extra argument":          {"web-path", "example.com", "extra"},
+		"Web recheck missing candidates":   {"web-recheck", "example.com", "8.8.8.8"},
+		"Web recheck extra argument":       {"web-recheck", "example.com", "8.8.8.8", "1.1.1.1", "extra"},
+		"SSH missing IP":                   {"ssh-observe"},
+		"SSH extra argument":               {"ssh-observe", "93.184.216.34", "22", "extra"},
+		"SSH nonnumeric port":              {"ssh-observe", "93.184.216.34", "ssh"},
+		"SSH zero port":                    {"ssh-observe", "93.184.216.34", "0"},
+		"SSH oversized port":               {"ssh-observe", "93.184.216.34", "65536"},
 	}
 
 	for name, args := range tests {
@@ -1097,8 +1353,10 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			resolver := systemresolvertest.New()
 			inventory := resolverinventorytest.New()
 			factory := &scriptedDNSFactory{observer: dnsobservationtest.New()}
+			dnsHTTPSPathFactory := &scriptedDNSHTTPSPathFactory{observer: dnshttpspathtest.New()}
 			webFactory := &scriptedWebFactory{observer: webobservationtest.New()}
 			webPathFactory := &scriptedWebPathFactory{observer: webpathtest.New()}
+			webRecheckFactory := &scriptedWebRecheckFactory{observer: webrechecktest.New()}
 			sshFactory := &scriptedSSHFactory{observer: sshobservationtest.New()}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
@@ -1109,12 +1367,14 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 				&stdout,
 				&stderr,
 				dependencies{
-					systemResolver:     resolver,
-					resolverInventory:  inventory,
-					newDNSObserver:     factory.New,
-					newWebObserver:     webFactory.New,
-					newWebPathObserver: webPathFactory.New,
-					newSSHObserver:     sshFactory.New,
+					systemResolver:          resolver,
+					resolverInventory:       inventory,
+					newDNSObserver:          factory.New,
+					newDNSHTTPSPathObserver: dnsHTTPSPathFactory.New,
+					newWebObserver:          webFactory.New,
+					newWebPathObserver:      webPathFactory.New,
+					newWebRecheckObserver:   webRecheckFactory.New,
+					newSSHObserver:          sshFactory.New,
 				},
 			)
 			if code != 2 {
@@ -1126,21 +1386,25 @@ func TestRunRejectsInvalidArgumentsWithoutCallingDependencies(t *testing.T) {
 			if !strings.Contains(stderr.String(), "Phase 0 diagnostic") ||
 				!strings.Contains(stderr.String(), "reachrun resolver-inventory") ||
 				!strings.Contains(stderr.String(), "reachrun dns-observe") ||
+				!strings.Contains(stderr.String(), "reachrun dns-https-path") ||
 				!strings.Contains(stderr.String(), "reachrun web-observe") ||
 				!strings.Contains(stderr.String(), "reachrun web-path") ||
+				!strings.Contains(stderr.String(), "reachrun web-recheck") ||
 				!strings.Contains(stderr.String(), "reachrun ssh-observe") {
 				t.Fatalf("stderr = %q, want Phase 0 usage", stderr.String())
 			}
 			if len(resolver.Calls()) != 0 || len(inventory.Calls()) != 0 ||
-				len(factory.calls) != 0 || len(webFactory.calls) != 0 ||
-				len(webPathFactory.calls) != 0 || len(sshFactory.calls) != 0 {
+				len(factory.calls) != 0 || len(dnsHTTPSPathFactory.calls) != 0 || len(webFactory.calls) != 0 ||
+				len(webPathFactory.calls) != 0 || len(webRecheckFactory.calls) != 0 || len(sshFactory.calls) != 0 {
 				t.Fatalf(
-					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, Web factory %#v, Web-path factory %#v, SSH factory %#v; want none",
+					"dependency calls = resolver %#v, inventory %#v, DNS factory %#v, DNS HTTPS-path factory %#v, Web factory %#v, Web-path factory %#v, Web-recheck factory %#v, SSH factory %#v; want none",
 					resolver.Calls(),
 					inventory.Calls(),
 					factory.calls,
+					dnsHTTPSPathFactory.calls,
 					webFactory.calls,
 					webPathFactory.calls,
+					webRecheckFactory.calls,
 					sshFactory.calls,
 				)
 			}
@@ -1177,6 +1441,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 			},
 			wantError: "invalid DNS observation result",
 		},
+		"DNS HTTPS path": {
+			args: []string{"dns-https-path", "udp", "cloudflare", "example.com"},
+			deps: dependencies{
+				newDNSHTTPSPathObserver: (&scriptedDNSHTTPSPathFactory{
+					observer: dnshttpspathtest.New(dnshttpspath.Result{}),
+				}).New,
+			},
+			wantError: "invalid DNS HTTPS-path result",
+		},
 		"Web observation": {
 			args: []string{"web-observe", "http", "example.com", "93.184.216.34"},
 			deps: dependencies{
@@ -1194,6 +1467,15 @@ func TestRunRejectsInvalidReturnedEnvelopes(t *testing.T) {
 				}).New,
 			},
 			wantError: "invalid Web-path result",
+		},
+		"Web candidate recheck": {
+			args: []string{"web-recheck", "example.com", "8.8.8.8", "1.1.1.1"},
+			deps: dependencies{
+				newWebRecheckObserver: (&scriptedWebRecheckFactory{
+					observer: webrechecktest.New(webrecheck.Result{}),
+				}).New,
+			},
+			wantError: "invalid Web candidate recheck result",
 		},
 		"SSH observation": {
 			args: []string{"ssh-observe", "93.184.216.34"},
@@ -1250,6 +1532,32 @@ func TestRunReportsDNSObserverFactoryErrorWithoutOutput(t *testing.T) {
 		t.Fatalf("stderr = %q, want factory error", stderr.String())
 	}
 	assertReferenceResolverConfig(t, factory.singleConfig(t))
+}
+
+func TestRunReportsDNSHTTPSPathFactoryErrorWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	factory := &scriptedDNSHTTPSPathFactory{err: errors.New("scripted factory failure")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{"dns-https-path", "udp", "cloudflare", "example.com"},
+		&stdout,
+		&stderr,
+		dependencies{newDNSHTTPSPathObserver: factory.New},
+	)
+	if code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run/stdout = %d/%q, want 1/empty", code, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "create DNS HTTPS-path observer: scripted factory failure") {
+		t.Fatalf("stderr = %q, want factory error", stderr.String())
+	}
+	config := factory.singleConfig(t)
+	if config.Timeout != phase0DNSHTTPSPathTimeout {
+		t.Fatalf("path timeout = %s, want %s", config.Timeout, phase0DNSHTTPSPathTimeout)
+	}
+	assertReferenceResolverConfig(t, config.DNS)
 }
 
 func TestRunPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
@@ -1391,10 +1699,82 @@ func TestRunWebPathPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T
 	}
 }
 
+func TestRunWebRecheckPropagatesParentCancellationAndAddsOuterDeadline(t *testing.T) {
+	t.Parallel()
+
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := cliWebRecheckEmptyResult(
+		webrecheck.StatusCancelled,
+		webrecheck.StopCancelled,
+		"",
+	)
+	observer := webRecheckObserverFunc(func(
+		ctx context.Context,
+		request webrecheck.Request,
+	) webrecheck.Result {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("Web recheck context error = %v, want context.Canceled", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("Web recheck context has no outer deadline")
+		}
+		want := webrecheck.Request{
+			Hostname:            "example.com",
+			LocalCandidates:     []string{"8.8.8.8"},
+			ReferenceCandidates: []string{"1.1.1.1"},
+		}
+		if !reflect.DeepEqual(request, want) {
+			t.Fatalf("Web recheck request = %#v, want %#v", request, want)
+		}
+		return result
+	})
+	factory := &scriptedWebRecheckFactory{observer: observer}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		parent,
+		[]string{"web-recheck", "example.com", "8.8.8.8", "1.1.1.1"},
+		&stdout,
+		&stderr,
+		dependencies{newWebRecheckObserver: factory.New},
+	)
+	if code != 130 || stderr.Len() != 0 {
+		t.Fatalf("run/stderr = %d/%q, want 130/empty", code, stderr.String())
+	}
+	decoded := decodeOneJSON[webrecheck.Result](t, stdout.Bytes())
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded result = %#v, want %#v", decoded, result)
+	}
+	if config := factory.singleConfig(t); config.Timeout != phase0WebRecheckTimeout {
+		t.Fatalf("Web recheck timeout = %s, want %s", config.Timeout, phase0WebRecheckTimeout)
+	}
+}
+
 type scriptedDNSFactory struct {
 	observer dnsobservation.Observer
 	err      error
 	calls    []dnsobservation.Config
+}
+
+type scriptedDNSHTTPSPathFactory struct {
+	observer dnshttpspath.Observer
+	err      error
+	calls    []dnshttpspath.Config
+}
+
+func (f *scriptedDNSHTTPSPathFactory) New(config dnshttpspath.Config) (dnshttpspath.Observer, error) {
+	config.DNS.Resolvers = append([]dnsobservation.ResolverEndpoint(nil), config.DNS.Resolvers...)
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedDNSHTTPSPathFactory) singleConfig(t *testing.T) dnshttpspath.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("DNS HTTPS-path factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
 }
 
 func (f *scriptedDNSFactory) New(config dnsobservation.Config) (dnsobservation.Observer, error) {
@@ -1421,6 +1801,12 @@ type scriptedWebPathFactory struct {
 	observer webpath.Observer
 	err      error
 	calls    []webpath.Config
+}
+
+type scriptedWebRecheckFactory struct {
+	observer webrecheck.Observer
+	err      error
+	calls    []webrecheck.Config
 }
 
 type scriptedSSHFactory struct {
@@ -1468,6 +1854,19 @@ func (f *scriptedWebPathFactory) singleConfig(t *testing.T) webpath.Config {
 	return f.calls[0]
 }
 
+func (f *scriptedWebRecheckFactory) New(config webrecheck.Config) (webrecheck.Observer, error) {
+	f.calls = append(f.calls, config)
+	return f.observer, f.err
+}
+
+func (f *scriptedWebRecheckFactory) singleConfig(t *testing.T) webrecheck.Config {
+	t.Helper()
+	if len(f.calls) != 1 {
+		t.Fatalf("Web recheck factory calls = %d, want 1", len(f.calls))
+	}
+	return f.calls[0]
+}
+
 type resolverFunc func(context.Context, string) systemresolver.Result
 
 func (f resolverFunc) Resolve(ctx context.Context, hostname string) systemresolver.Result {
@@ -1498,6 +1897,24 @@ func (f webPathObserverFunc) Observe(
 	ctx context.Context,
 	request webpath.Request,
 ) webpath.Result {
+	return f(ctx, request)
+}
+
+type webRecheckObserverFunc func(context.Context, webrecheck.Request) webrecheck.Result
+
+func (f webRecheckObserverFunc) Observe(
+	ctx context.Context,
+	request webrecheck.Request,
+) webrecheck.Result {
+	return f(ctx, request)
+}
+
+type dnsHTTPSPathObserverFunc func(context.Context, dnshttpspath.Request) dnshttpspath.Result
+
+func (f dnsHTTPSPathObserverFunc) Observe(
+	ctx context.Context,
+	request dnshttpspath.Request,
+) dnshttpspath.Result {
 	return f(ctx, request)
 }
 
@@ -1625,18 +2042,15 @@ func cliDNSSuccessResult(
 	case dnsobservation.QueryTypeCNAME:
 		record.Target = "target.example.com"
 		effectiveName = record.Target
-	}
-	remoteEndpoint := endpoint
-	if transport == dnsobservation.TransportDoH {
-		switch resolver {
-		case resolverCloudflareDoH:
-			remoteEndpoint = "1.1.1.1:443"
-		case resolverGoogleDoH:
-			remoteEndpoint = "8.8.8.8:443"
-		default:
-			remoteEndpoint = "192.0.2.53:443"
+	case dnsobservation.QueryTypeSVCB, dnsobservation.QueryTypeHTTPS:
+		record.Service = &dnsobservation.ServiceBinding{
+			Priority: 1,
+			Target:   "target.example.com",
+			Mode:     dnsobservation.ServiceBindingService,
+			Params:   []dnsobservation.ServiceParameter{},
 		}
 	}
+	remoteEndpoint := cliDNSRemoteEndpoint(resolver, transport, endpoint)
 	evidence := dnsobservation.Evidence{
 		RCode: dnsobservation.ResponseCode{Code: 0, Name: "NOERROR"},
 		Flags: dnsobservation.ResponseFlags{
@@ -1658,6 +2072,117 @@ func cliDNSSuccessResult(
 		&evidence,
 		nil,
 	)
+}
+
+func cliDNSNoDataResult(
+	hostname string,
+	queryType dnsobservation.QueryType,
+	resolver dnsobservation.ResolverID,
+	transport dnsobservation.Transport,
+	endpoint string,
+) dnsobservation.Result {
+	evidence := dnsobservation.Evidence{
+		RCode: dnsobservation.ResponseCode{Code: 0, Name: "NOERROR"},
+		Flags: dnsobservation.ResponseFlags{
+			RecursionDesired: true, RecursionAvailable: true,
+		},
+		AnswerKind:     dnsobservation.AnswerKindNoData,
+		EffectiveName:  hostname,
+		Records:        []dnsobservation.Record{},
+		ResponseBytes:  42,
+		RemoteEndpoint: cliDNSRemoteEndpoint(resolver, transport, endpoint),
+	}
+	if transport == dnsobservation.TransportDoH {
+		evidence.DoHStatus = 200
+	}
+	return cliDNSResult(
+		probe.OutcomeSucceeded,
+		cliDNSInput(hostname, queryType, resolver, transport, endpoint),
+		&evidence,
+		nil,
+	)
+}
+
+func cliDNSRemoteEndpoint(
+	resolver dnsobservation.ResolverID,
+	transport dnsobservation.Transport,
+	endpoint string,
+) string {
+	if transport != dnsobservation.TransportDoH {
+		return endpoint
+	}
+	switch resolver {
+	case resolverCloudflareDoH:
+		return "1.1.1.1:443"
+	case resolverGoogleDoH:
+		return "8.8.8.8:443"
+	default:
+		return "192.0.2.53:443"
+	}
+}
+
+func cliDNSHTTPSPathSuccessResult(
+	resolver dnsobservation.ResolverID,
+	transport dnsobservation.Transport,
+	endpoint string,
+) dnshttpspath.Result {
+	https := cliDNSNoDataResult(
+		"example.com", dnsobservation.QueryTypeHTTPS, resolver, transport, endpoint,
+	)
+	a := cliDNSSuccessResult(
+		"example.com", dnsobservation.QueryTypeA, resolver, transport, endpoint,
+	)
+	aaaa := cliDNSSuccessResult(
+		"example.com", dnsobservation.QueryTypeAAAA, resolver, transport, endpoint,
+	)
+	return dnshttpspath.Result{
+		SchemaVersion: dnshttpspath.SchemaVersion,
+		Operation:     dnshttpspath.Operation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    3,
+		Platform:      cliPlatform(),
+		Input: dnshttpspath.Input{
+			Hostname: "example.com", Resolver: resolver, Transport: transport,
+			QueryType: dnsobservation.QueryTypeHTTPS, AliasLimit: 3, ServiceTargetLimit: 8,
+			AddressQueryTypes: []dnsobservation.QueryType{
+				dnsobservation.QueryTypeA, dnsobservation.QueryTypeAAAA,
+			},
+		},
+		Status:            dnshttpspath.StatusCompleted,
+		Completion:        dnshttpspath.CompletionOriginFallback,
+		HTTPSObservations: []dnsobservation.Result{https},
+		ServiceBindings:   []dnshttpspath.BindingDecision{},
+		AddressTargets: []dnshttpspath.AddressTarget{{
+			Hostname: "example.com", Source: dnshttpspath.TargetOriginFallback,
+			Observations: []dnsobservation.Result{a, aaaa},
+		}},
+	}
+}
+
+func cliDNSHTTPSPathTerminalResult(
+	status dnshttpspath.Status,
+	reason dnshttpspath.StopReason,
+	detail string,
+) dnshttpspath.Result {
+	return dnshttpspath.Result{
+		SchemaVersion: dnshttpspath.SchemaVersion,
+		Operation:     dnshttpspath.Operation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    1,
+		Platform:      cliPlatform(),
+		Input: dnshttpspath.Input{
+			Hostname: "example.com", Resolver: resolverCloudflareWire,
+			Transport: dnsobservation.TransportUDP, QueryType: dnsobservation.QueryTypeHTTPS,
+			AliasLimit: 3, ServiceTargetLimit: 8,
+			AddressQueryTypes: []dnsobservation.QueryType{
+				dnsobservation.QueryTypeA, dnsobservation.QueryTypeAAAA,
+			},
+		},
+		Status: status, StopReason: reason, Detail: detail,
+		HTTPSObservations: []dnsobservation.Result{},
+		ServiceBindings:   []dnshttpspath.BindingDecision{},
+		AddressTargets:    []dnshttpspath.AddressTarget{},
+	}
 }
 
 func cliDNSFailureResult(
@@ -1868,6 +2393,88 @@ func cliWebPathEmptyResult(
 			RedirectLimit: 3, CandidateLimitPerFamily: 2,
 		},
 		Status: status, StopReason: reason, Hops: []webpath.Hop{},
+	}
+}
+
+func cliWebRecheckCompletedResult(
+	local []string,
+	reference []string,
+) webrecheck.Result {
+	result := webrecheck.Result{
+		SchemaVersion:              webrecheck.SchemaVersion,
+		Operation:                  webrecheck.Operation,
+		ObservedAt:                 cliObservedAt(),
+		DurationMS:                 4,
+		Platform:                   cliPlatform(),
+		Input:                      cliWebRecheckInput(local, reference),
+		Status:                     webrecheck.StatusCompleted,
+		LocalCandidatesOmitted:     max(0, len(local)-2),
+		ReferenceCandidatesOmitted: max(0, len(reference)-2),
+		Attempts:                   []webrecheck.Attempt{},
+	}
+	for index := range max(min(len(local), 2), min(len(reference), 2)) {
+		if index < len(local) && index < 2 {
+			result.Attempts = append(result.Attempts, webrecheck.Attempt{
+				CandidateSource: webrecheck.CandidateLocal,
+				Observation: cliWebFailureResult(
+					webobservation.SchemeHTTPS,
+					"example.com",
+					local[index],
+					probe.OutcomeFailed,
+					webobservation.FailureTCPConnectionRefused,
+				),
+			})
+		}
+		if index < len(reference) && index < 2 {
+			result.Attempts = append(result.Attempts, webrecheck.Attempt{
+				CandidateSource: webrecheck.CandidateReference,
+				Observation: cliWebFailureResult(
+					webobservation.SchemeHTTPS,
+					"example.com",
+					reference[index],
+					probe.OutcomeFailed,
+					webobservation.FailureTCPConnectionRefused,
+				),
+			})
+		}
+	}
+	return result
+}
+
+func cliWebRecheckEmptyResult(
+	status webrecheck.Status,
+	reason webrecheck.StopReason,
+	detail string,
+) webrecheck.Result {
+	return webrecheck.Result{
+		SchemaVersion: webrecheck.SchemaVersion,
+		Operation:     webrecheck.Operation,
+		ObservedAt:    cliObservedAt(),
+		DurationMS:    1,
+		Platform:      cliPlatform(),
+		Input: cliWebRecheckInput(
+			[]string{"8.8.8.8"},
+			[]string{"1.1.1.1"},
+		),
+		Status: status, StopReason: reason, Detail: detail,
+		Attempts: []webrecheck.Attempt{},
+	}
+}
+
+func cliWebRecheckInput(local, reference []string) webrecheck.Input {
+	return webrecheck.Input{
+		Hostname:                "example.com",
+		URL:                     "https://example.com/",
+		Scheme:                  webobservation.SchemeHTTPS,
+		Family:                  webobservation.FamilyIPv4,
+		Port:                    443,
+		Method:                  "GET",
+		Path:                    "/",
+		CandidateLimitPerSource: 2,
+		RetryLimit:              0,
+		RedirectLimit:           0,
+		LocalCandidates:         append([]string(nil), local...),
+		ReferenceCandidates:     append([]string(nil), reference...),
 	}
 }
 

@@ -1,6 +1,7 @@
 package dnsobservation
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -265,6 +266,24 @@ func evidenceFromResponse(
 				TTL:    answer.Header.TTL,
 				Target: canonicalName(body.CNAME.String()),
 			})
+		case *dnsmessage.SVCBResource:
+			records = append(records, serviceBindingRecord(
+				name,
+				QueryTypeSVCB,
+				answer.Header.TTL,
+				body.Priority,
+				body.Target,
+				body.Params,
+			))
+		case *dnsmessage.HTTPSResource:
+			records = append(records, serviceBindingRecord(
+				name,
+				QueryTypeHTTPS,
+				answer.Header.TTL,
+				body.Priority,
+				body.Target,
+				body.Params,
+			))
 		}
 	}
 
@@ -336,6 +355,39 @@ func evidenceFromResponse(
 		RemoteEndpoint: remoteEndpoint,
 		DoHStatus:      dohStatus,
 	}, nil
+}
+
+func serviceBindingRecord(
+	name string,
+	recordType QueryType,
+	ttl uint32,
+	priority uint16,
+	target dnsmessage.Name,
+	params []dnsmessage.SVCParam,
+) Record {
+	mode := ServiceBindingService
+	if priority == 0 {
+		mode = ServiceBindingAlias
+	}
+	typedParams := make([]ServiceParameter, 0, len(params))
+	for _, param := range params {
+		typedParams = append(typedParams, ServiceParameter{
+			Key:      uint16(param.Key),
+			Name:     serviceParameterName(uint16(param.Key)),
+			ValueHex: hex.EncodeToString(param.Value),
+		})
+	}
+	return Record{
+		Name: name,
+		Type: recordType,
+		TTL:  ttl,
+		Service: &ServiceBinding{
+			Priority: priority,
+			Target:   canonicalName(target.String()),
+			Mode:     mode,
+			Params:   typedParams,
+		},
+	}
 }
 
 func followCNAMEs(hostname string, records []Record) (string, bool) {
@@ -423,6 +475,10 @@ func wireQueryType(value QueryType) (dnsmessage.Type, error) {
 		return dnsmessage.TypeAAAA, nil
 	case QueryTypeCNAME:
 		return dnsmessage.TypeCNAME, nil
+	case QueryTypeSVCB:
+		return dnsmessage.TypeSVCB, nil
+	case QueryTypeHTTPS:
+		return dnsmessage.TypeHTTPS, nil
 	default:
 		return 0, fmt.Errorf("unsupported DNS query type %q", value)
 	}
@@ -452,7 +508,38 @@ func (t Transport) valid() bool {
 }
 
 func (q QueryType) valid() bool {
-	return q == QueryTypeA || q == QueryTypeAAAA || q == QueryTypeCNAME
+	return q == QueryTypeA ||
+		q == QueryTypeAAAA ||
+		q == QueryTypeCNAME ||
+		q == QueryTypeSVCB ||
+		q == QueryTypeHTTPS
+}
+
+func serviceParameterName(key uint16) string {
+	switch dnsmessage.SVCParamKey(key) {
+	case dnsmessage.SVCParamMandatory:
+		return "mandatory"
+	case dnsmessage.SVCParamALPN:
+		return "alpn"
+	case dnsmessage.SVCParamNoDefaultALPN:
+		return "no-default-alpn"
+	case dnsmessage.SVCParamPort:
+		return "port"
+	case dnsmessage.SVCParamIPv4Hint:
+		return "ipv4hint"
+	case dnsmessage.SVCParamECH:
+		return "ech"
+	case dnsmessage.SVCParamIPv6Hint:
+		return "ipv6hint"
+	case dnsmessage.SVCParamDOHPath:
+		return "dohpath"
+	case dnsmessage.SVCParamOHTTP:
+		return "ohttp"
+	case dnsmessage.SVCParamTLSSupportedGroups:
+		return "tls-supported-groups"
+	default:
+		return fmt.Sprintf("key%d", key)
+	}
 }
 
 func (k AnswerKind) valid() bool {

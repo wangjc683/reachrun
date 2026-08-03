@@ -166,6 +166,95 @@ func TestObserveSupportsCNAMEQuestion(t *testing.T) {
 	}
 }
 
+func TestObserveReturnsTypedHTTPSAndSVCBRecords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		queryType QueryType
+		wireType  dnsmessage.Type
+		resource  dnsmessage.Resource
+		want      Record
+	}{
+		{
+			name:      "HTTPS ServiceMode",
+			queryType: QueryTypeHTTPS,
+			wireType:  dnsmessage.TypeHTTPS,
+			resource: serviceResource(
+				QueryTypeHTTPS,
+				"www.example.com.",
+				1,
+				"svc.example.net.",
+				[]dnsmessage.SVCParam{
+					{Key: dnsmessage.SVCParamMandatory, Value: []byte{0, 1}},
+					{Key: dnsmessage.SVCParamALPN, Value: []byte{2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'}},
+					{Key: dnsmessage.SVCParamPort, Value: []byte{0x01, 0xbb}},
+					{Key: dnsmessage.SVCParamIPv4Hint, Value: []byte{192, 0, 2, 1}},
+				},
+			),
+			want: Record{
+				Name: "www.example.com", Type: QueryTypeHTTPS, TTL: 300,
+				Service: &ServiceBinding{
+					Priority: 1, Target: "svc.example.net", Mode: ServiceBindingService,
+					Params: []ServiceParameter{
+						{Key: 0, Name: "mandatory", ValueHex: "0001"},
+						{Key: 1, Name: "alpn", ValueHex: "02683208687474702f312e31"},
+						{Key: 3, Name: "port", ValueHex: "01bb"},
+						{Key: 4, Name: "ipv4hint", ValueHex: "c0000201"},
+					},
+				},
+			},
+		},
+		{
+			name:      "SVCB AliasMode",
+			queryType: QueryTypeSVCB,
+			wireType:  dnsmessage.TypeSVCB,
+			resource: serviceResource(
+				QueryTypeSVCB,
+				"www.example.com.",
+				0,
+				"alias.example.net.",
+				nil,
+			),
+			want: Record{
+				Name: "www.example.com", Type: QueryTypeSVCB, TTL: 300,
+				Service: &ServiceBinding{
+					Priority: 0, Target: "alias.example.net", Mode: ServiceBindingAlias,
+					Params: []ServiceParameter{},
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			port, done := startUDPResponder(t, func(query []byte) ([]byte, error) {
+				request, err := unpackDNSMessage(query)
+				if err != nil {
+					return nil, err
+				}
+				if len(request.Questions) != 1 || request.Questions[0].Type != test.wireType {
+					return nil, fmt.Errorf("query = %#v, want type %v", request.Questions, test.wireType)
+				}
+				return packResponse(query, func(response *dnsmessage.Message) {
+					response.Answers = []dnsmessage.Resource{test.resource}
+				})
+			})
+			observer := newTestWireObserver(t, port, time.Second)
+
+			result := observer.Observe(context.Background(), wireRequest(test.queryType, TransportUDP))
+			waitResponder(t, done)
+
+			assertValidSuccess(t, result)
+			if result.Evidence.AnswerKind != AnswerKindAnswer ||
+				!reflect.DeepEqual(result.Evidence.Records, []Record{test.want}) {
+				t.Fatalf("HTTPS/SVCB evidence = %#v, want record %#v", result.Evidence, test.want)
+			}
+		})
+	}
+}
+
 func TestObserveClassifiesValidDNSOutcomesAsSucceeded(t *testing.T) {
 	t.Parallel()
 
@@ -793,6 +882,36 @@ func cnameResource(name, target string, ttl uint32) dnsmessage.Resource {
 			Class: dnsmessage.ClassINET, TTL: ttl,
 		},
 		Body: &dnsmessage.CNAMEResource{CNAME: dnsmessage.MustNewName(target)},
+	}
+}
+
+func serviceResource(
+	recordType QueryType,
+	name string,
+	priority uint16,
+	target string,
+	params []dnsmessage.SVCParam,
+) dnsmessage.Resource {
+	header := dnsmessage.ResourceHeader{
+		Name: dnsmessage.MustNewName(name), Class: dnsmessage.ClassINET, TTL: 300,
+	}
+	service := dnsmessage.SVCBResource{
+		Priority: priority,
+		Target:   dnsmessage.MustNewName(target),
+		Params:   params,
+	}
+	switch recordType {
+	case QueryTypeSVCB:
+		header.Type = dnsmessage.TypeSVCB
+		return dnsmessage.Resource{Header: header, Body: &service}
+	case QueryTypeHTTPS:
+		header.Type = dnsmessage.TypeHTTPS
+		return dnsmessage.Resource{
+			Header: header,
+			Body:   &dnsmessage.HTTPSResource{SVCBResource: service},
+		}
+	default:
+		panic("serviceResource requires SVCB or HTTPS")
 	}
 }
 

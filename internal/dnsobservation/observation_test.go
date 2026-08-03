@@ -268,6 +268,57 @@ func TestValidateAcceptsDoHEndpointIdentity(t *testing.T) {
 	}
 }
 
+func TestValidateChecksServiceBindingContract(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(*Result){
+		"missing service binding": func(result *Result) {
+			result.Evidence.Records[0].Service = nil
+		},
+		"alias priority marked service": func(result *Result) {
+			result.Evidence.Records[0].Service.Mode = ServiceBindingService
+		},
+		"noncanonical target": func(result *Result) {
+			result.Evidence.Records[0].Service.Target = "Target.Example"
+		},
+		"parameter keys out of order": func(result *Result) {
+			result.Evidence.Records[0].Service.Params = []ServiceParameter{
+				{Key: 3, Name: "port", ValueHex: "01bb"},
+				{Key: 1, Name: "alpn", ValueHex: "026832"},
+			}
+		},
+		"nil parameter array": func(result *Result) {
+			result.Evidence.Records[0].Service.Params = nil
+		},
+		"parameter name mismatch": func(result *Result) {
+			result.Evidence.Records[0].Service.Params[0].Name = "key1"
+		},
+		"parameter value not canonical hex": func(result *Result) {
+			result.Evidence.Records[0].Service.Params[0].ValueHex = "0A"
+		},
+		"service mixed with cname target": func(result *Result) {
+			result.Evidence.Records[0].Target = "other.example"
+		},
+	}
+
+	for name, mutate := range tests {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			result := validHTTPSResult()
+			mutate(&result)
+			if err := Validate(result); err == nil {
+				t.Fatal("Validate() error = nil, want service binding rejection")
+			}
+		})
+	}
+
+	result := validHTTPSResult()
+	if err := Validate(result); err != nil {
+		t.Fatalf("valid HTTPS result rejected: %v", err)
+	}
+}
+
 func TestValidateChecksFailureInputContract(t *testing.T) {
 	t.Parallel()
 
@@ -457,6 +508,25 @@ func validResult() Result {
 		Outcome:  probe.OutcomeSucceeded,
 		Evidence: &evidence,
 	}
+}
+
+func validHTTPSResult() Result {
+	result := validResult()
+	result.Input.QueryType = QueryTypeHTTPS
+	result.Evidence.Records = []Record{{
+		Name: "www.example.com",
+		Type: QueryTypeHTTPS,
+		TTL:  60,
+		Service: &ServiceBinding{
+			Priority: 0,
+			Target:   "svc.example.net",
+			Mode:     ServiceBindingAlias,
+			Params: []ServiceParameter{{
+				Key: 1, Name: "alpn", ValueHex: "026832",
+			}},
+		},
+	}}
+	return result
 }
 
 func testSOA() *SOARecord {

@@ -24,7 +24,7 @@ ReachRun does not run continuously, send alerts, or claim that a failure was def
 
 ## Development preview
 
-The current Phase 0 CLI can inspect three deliberately separate kinds of name-resolution evidence, observe one bounded public Web path, make one direct first-hop Web observation, and perform one bounded SSH identification exchange against an explicit public IP:
+The current Phase 0 CLI can inspect three deliberately separate kinds of name-resolution evidence, follow one bounded DNS HTTPS AliasMode path, observe one bounded public Web path, recheck local and reference Web candidates under fixed first-hop conditions, make one direct Web observation, and perform one bounded SSH identification exchange against an explicit public IP:
 
 ```bash
 git clone https://github.com/wangjc683/reachrun.git
@@ -32,13 +32,16 @@ cd reachrun
 go run ./cmd/reachrun resolve localhost
 go run ./cmd/reachrun resolver-inventory
 go run ./cmd/reachrun dns-observe udp current A example.com
+go run ./cmd/reachrun dns-observe doh cloudflare HTTPS example.com
+go run ./cmd/reachrun dns-https-path doh cloudflare example.com
 go run ./cmd/reachrun web-path example.com
+go run ./cmd/reachrun web-recheck one.one.one.one 1.1.1.1 1.0.0.1
 go run ./cmd/reachrun web-observe https one.one.one.one 1.1.1.1
 # Replace YOUR_SERVER_IP with one of your public server addresses.
 go run ./cmd/reachrun ssh-observe YOUR_SERVER_IP 22
 ```
 
-The name-resolution commands distinguish operating-system resolution, configured resolver candidates, and a controlled query to one explicit resolver. `web-path` starts with system resolution, connects only to bounded public candidates, tries HTTPS first, safely re-resolves up to three redirect targets, and uses HTTP only when every initial HTTPS candidate failed before any valid response. Its report keeps every resolution and direct Web attempt as distinct evidence. `web-observe` bypasses name resolution for the connection while preserving the hostname for HTTP Host, TLS SNI, and certificate verification. `ssh-observe` distinguishes TCP failure, a reachable but unconfirmed endpoint, and a valid SSH identification without attempting key exchange or login. Each command prints one versioned JSON evidence document. They require Go 1.26 or newer and are developer diagnostics, not the final one-click browser experience. See [Development Setup](docs/development/SETUP.md) for the full command set, tests, and platform limitations.
+The name-resolution commands distinguish operating-system resolution, configured resolver candidates, and a controlled query to one explicit resolver. `dns-https-path` keeps that resolver and transport fixed while following up to three HTTPS AliasMode records, then observes A and AAAA without treating address hints as authoritative. `web-path` starts with system resolution, connects only to bounded public candidates, tries HTTPS first, safely re-resolves up to three redirect targets, and uses HTTP only when every initial HTTPS candidate failed before any valid response. Its report keeps every resolution and direct Web attempt as distinct evidence. `web-recheck` alternates bounded same-family local/reference candidates while keeping HTTPS hostname identity, policy, and fresh-connection behavior fixed; the labels are caller-supplied evidence context, not a DNS diagnosis. `web-observe` bypasses name resolution for the connection while preserving the hostname for HTTP Host, TLS SNI, and certificate verification. `ssh-observe` distinguishes TCP failure, a reachable but unconfirmed endpoint, and a valid SSH identification without attempting key exchange or login. Each command prints one versioned JSON evidence document. They require Go 1.26 or newer and are developer diagnostics, not the final one-click browser experience. See [Development Setup](docs/development/SETUP.md) for the full command set, tests, and platform limitations.
 
 ## Privacy
 

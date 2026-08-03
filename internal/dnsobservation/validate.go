@@ -1,6 +1,7 @@
 package dnsobservation
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"strconv"
@@ -324,23 +325,62 @@ func validateRecord(record Record) error {
 		if err != nil || !address.Is4() || address.String() != record.Address {
 			return fmt.Errorf("A address %q is not canonical IPv4", record.Address)
 		}
-		if record.Family != IPFamilyIPv4 || record.Target != "" {
-			return fmt.Errorf("A record has inconsistent family or target")
+		if record.Family != IPFamilyIPv4 || record.Target != "" || record.Service != nil {
+			return fmt.Errorf("A record has inconsistent family, target, or service binding")
 		}
 	case QueryTypeAAAA:
 		address, err := netip.ParseAddr(record.Address)
 		if err != nil || !address.Is6() || address.Is4() || address.String() != record.Address {
 			return fmt.Errorf("AAAA address %q is not canonical IPv6", record.Address)
 		}
-		if record.Family != IPFamilyIPv6 || record.Target != "" {
-			return fmt.Errorf("AAAA record has inconsistent family or target")
+		if record.Family != IPFamilyIPv6 || record.Target != "" || record.Service != nil {
+			return fmt.Errorf("AAAA record has inconsistent family, target, or service binding")
 		}
 	case QueryTypeCNAME:
-		if record.Address != "" || record.Family != "" || !isCanonicalDNSName(record.Target) {
-			return fmt.Errorf("CNAME record has inconsistent address, family, or target")
+		if record.Address != "" || record.Family != "" || record.Service != nil ||
+			!isCanonicalDNSName(record.Target) {
+			return fmt.Errorf("CNAME record has inconsistent address, family, target, or service binding")
+		}
+	case QueryTypeSVCB, QueryTypeHTTPS:
+		if record.Address != "" || record.Family != "" || record.Target != "" || record.Service == nil {
+			return fmt.Errorf("%s record has inconsistent address, family, target, or service binding", record.Type)
+		}
+		if err := validateServiceBinding(*record.Service); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("unsupported record type %q", record.Type)
+	}
+	return nil
+}
+
+func validateServiceBinding(binding ServiceBinding) error {
+	if !isCanonicalDNSName(binding.Target) {
+		return fmt.Errorf("service target %q is not canonical", binding.Target)
+	}
+	if binding.Params == nil {
+		return fmt.Errorf("service parameters must encode as an array")
+	}
+	wantMode := ServiceBindingService
+	if binding.Priority == 0 {
+		wantMode = ServiceBindingAlias
+	}
+	if binding.Mode != wantMode {
+		return fmt.Errorf("service binding priority %d requires mode %q", binding.Priority, wantMode)
+	}
+	var previous uint16
+	for index, param := range binding.Params {
+		if index > 0 && param.Key <= previous {
+			return fmt.Errorf("service parameters must use strictly increasing keys")
+		}
+		if param.Name != serviceParameterName(param.Key) {
+			return fmt.Errorf("service parameter %d name %q does not match key", index, param.Name)
+		}
+		value, err := hex.DecodeString(param.ValueHex)
+		if err != nil || hex.EncodeToString(value) != param.ValueHex {
+			return fmt.Errorf("service parameter %d value_hex is not canonical lowercase hexadecimal", index)
+		}
+		previous = param.Key
 	}
 	return nil
 }
@@ -367,4 +407,11 @@ func isCanonicalDNSName(value string) bool {
 	}
 	normalized, _, err := normalizeHostname(value)
 	return err == nil && normalized == value
+}
+
+// NormalizeHostname exposes the DNS Observation hostname contract to bounded
+// orchestration modules without exposing the dnsmessage codec type.
+func NormalizeHostname(value string) (string, error) {
+	normalized, _, err := normalizeHostname(value)
+	return normalized, err
 }
